@@ -84,20 +84,19 @@ This project was built to transition static code analysis into a live, multi-age
 
 To run the full ARGUS predictive engine and web application on your local machine:
 
+## 🚀 Quick Start Guide
+
+### 1. Start Infrastructure (PostgreSQL & Redis)
 ```bash
-# 1. Clone the repository
-git clone [https://github.com/manojmulammagari/argus.git](https://github.com/manojmulammagari/argus.git)
+docker compose up -d
 
-# 2. Navigate into the directory
-cd argus
-
-# 3. Install the required dependencies
+cd backend
 pip install -r requirements.txt
+# Copy backend/.env.example to backend/.env and populate your keys
+uvicorn main_api:app --reload --host 0.0.0.0 --port 8000
 
-# 4. Set up Environment Variables
-# Create a .env file in the root folder and add your free API keys:
-# GROQ_API_KEY=gsk_your_groq_key_here
-# GEMINI_API_KEY=AIza_your_gemini_key_here
+cd frontend
+npm install
+npm run dev
+# Dashboard runs at http://localhost:3000
 
-# 5. Launch the FastAPI server
-python -m uvicorn main:app --reload --port 8000
