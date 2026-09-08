@@ -678,7 +678,8 @@ function onScanComplete(ev) {
     document.getElementById("prLink").href = ev.remediation_pr_url;
   }
 
-  if (ev.attack_chain) renderAttackChain(ev.attack_chain);
+  const attackSteps = ev.attack_chain || ev.summary?.attack_chain;
+  if (attackSteps) renderAttackChain(attackSteps);
 
   const badge = document.getElementById("scanBadge");
   badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg><span style="color:var(--green)">Scan complete · ${ev.total_findings || findings.length} findings</span>`;
@@ -691,8 +692,11 @@ function connectSSE(sid) {
   es.onmessage = (e) => {
     let ev;
     try { ev = JSON.parse(e.data); } catch { return; }
-    if (ev.type === "trace")         onTrace(ev);
-    else if (ev.type === "status")   onStatus(ev);
+    if (ev.type === "trace" || ev.type === "agent_trace") {
+      ev.text = ev.text || ev.trace;
+      onTrace(ev);
+    }
+    else if (ev.type === "status" || ev.type === "agent_status") onStatus(ev);
     else if (ev.status === "error")  onAgentError(ev);
     else if (ev.type === "finding")  onFinding(ev);
     else if (ev.type === "scan_complete") { onScanComplete(ev); es.close(); }
