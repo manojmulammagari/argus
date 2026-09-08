@@ -49,6 +49,7 @@ GROQ_KEY      = os.environ.get("GROQ_API_KEY", "")
 GEMINI_KEY    = os.environ.get("GEMINI_API_KEY", "")
 REDIS_URL     = os.environ.get("REDIS_URL", "redis://localhost:6379")
 DATABASE_URL  = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/argus")
+DEMO_MODE     = os.environ.get("DEMO_MODE", "False").lower() == "true"
 
 # ── Optional Infrastructure Clients ──────────────────────────────────────────
 redis_client = None
@@ -767,9 +768,23 @@ async def run_full_scan(scan_id: str, diff: str):
             SCANS[scan_id]["risk_score"] = risk
             SCANS[scan_id]["remediation_pr_url"] = pr_url
             SCANS[scan_id]["attack_chain"] = attack_chain
-            SCANS[scan_id]["done"] = True
-        await emit(scan_id, summary)
-        await trace(scan_id,"orchestrator",f"🏁 ARGUS complete — Risk: {risk}/100 | Findings: {len(all_findings)}")
+            
+        if DEMO_MODE:
+            if scan_id in SCANS:
+                SCANS[scan_id]["done"] = True
+                SCANS[scan_id]["status"] = "complete"
+            await emit(scan_id, summary)
+            await trace(scan_id,"orchestrator",f"🏁 ARGUS complete — Risk: {risk}/100 | Findings: {len(all_findings)}")
+        else:
+            if scan_id in SCANS:
+                SCANS[scan_id]["status"] = "awaiting_human_approval"
+            await emit(scan_id, {
+                "type": "remediation_ready",
+                "diff": diff,
+                "awaiting_approval": True
+            })
+            await trace(scan_id, "orchestrator", "⏸️ Awaiting human approval for remediation PR...")
+
     except Exception as exc:
         print(f"Scan error: {exc}")
         if scan_id in SCANS:
@@ -783,6 +798,33 @@ class DemoScanRequest(BaseModel):
     repo_full_name: Optional[str] = "demo/vulnerable-app"
     pr_number: Optional[int] = 42
     frameworks: Optional[List[str]] = ["SOC2", "HIPAA", "PCI-DSS"]
+
+class ApproveRequest(BaseModel):
+    auto_confirmed: Optional[bool] = False
+
+@app.post("/api/scans/{scan_id}/approve")
+async def approve_remediation(scan_id: str, payload: Optional[ApproveRequest] = None):
+    if scan_id not in SCANS:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    
+    scan = SCANS[scan_id]
+    scan["status"] = "complete"
+    
+    repo = scan.get("repo_full_name", "demo/vulnerable-app")
+    pr_num = scan.get("pr_number", 42)
+    pr_url = f"https://github.com/{repo}/pull/{pr_num + 1}"
+    scan["remediation_pr_url"] = pr_url
+    
+    await emit(scan_id, {"type": "remediation_approved", "pr_url": pr_url})
+    
+    if not scan.get("done"):
+        summary = scan.get("summary", {})
+        summary["type"] = "scan_complete"
+        summary["remediation_pr_url"] = pr_url
+        scan["done"] = True
+        await emit(scan_id, summary)
+        
+    return {"status": "success", "pr_url": pr_url}
 
 @app.get("/")
 async def root():

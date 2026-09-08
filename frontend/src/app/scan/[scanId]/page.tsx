@@ -38,7 +38,8 @@ type AgentKey = keyof typeof AGENT_CONFIG
 
 const BREACH_ORACLE: Record<string, { breach: string; year: number; records: string; fine: string }> = {
   "CWE-798": { breach: "Twitch source leak",    year: 2021, records: "125 GB source",   fine: "Reputation destroyed"    },
-  "CWE-89":  { breach: "Equifax breach",        year: 2017, records: "147 M records",   fine: "$575 M settlement"       },
+  "CWE-89":  { breach: "TalkTalk breach",       year: 2015, records: "156 K customers", fine: "£400 K ICO fine"         },
+  "CWE-94":  { breach: "Equifax breach",        year: 2017, records: "147 M records",   fine: "$575 M settlement"       },
   "CWE-532": { breach: "Change Healthcare",     year: 2024, records: "100 M+ patients", fine: "$872 M total cost"       },
   "CWE-79":  { breach: "British Airways",       year: 2018, records: "500 K customers", fine: "£20 M GDPR fine"        },
   "CWE-287": { breach: "Uber data breach",      year: 2022, records: "57 M users",      fine: "$148 M settlement"      },
@@ -92,6 +93,8 @@ function useAgentStream(scanId: string) {
   const [findings,     setFindings]     = useState<Finding[]>([])
   const [scanComplete, setScanComplete] = useState<ScanComplete | null>(null)
   const [isStarted,    setIsStarted]    = useState(false)
+  const [awaitingApproval, setAwaitingApproval] = useState(false)
+  const [patchDiff, setPatchDiff] = useState<string | null>(null)
 
   useEffect(() => {
     if (!scanId) return
@@ -143,6 +146,18 @@ function useAgentStream(scanId: string) {
             })
             es.close()
             break
+          case "remediation_ready":
+            setAgentStates(prev => ({
+              ...prev,
+              remedy_bot: { ...prev.remedy_bot, status: "complete" }
+            }))
+            setAwaitingApproval(true)
+            setPatchDiff(ev.diff)
+            break
+          case "remediation_approved":
+            setAwaitingApproval(false)
+            setScanComplete(prev => prev ? { ...prev, remediation_pr_url: ev.pr_url } : null)
+            break
         }
       } catch { /* ignore malformed */ }
     }
@@ -150,7 +165,7 @@ function useAgentStream(scanId: string) {
     return () => es.close()
   }, [scanId])
 
-  return { agentStates, findings, scanComplete, isStarted }
+  return { agentStates, findings, scanComplete, isStarted, awaitingApproval, patchDiff }
 }
 
 // ─── StatusDot ────────────────────────────────────────────────────────────────
@@ -468,12 +483,94 @@ function AttackChain({ steps }: { steps: string[] }) {
   )
 }
 
+// ─── HITL Gate ────────────────────────────────────────────────────────
+
+function HitlGate({ scanId, patchDiff }: { scanId: string, patchDiff: string }) {
+  const [autoConfirm, setAutoConfirm] = useState(false)
+  const [timeLeft, setTimeLeft] = useState(5)
+  const [isApproving, setIsApproving] = useState(false)
+
+  useEffect(() => {
+    if (!autoConfirm || isApproving) return
+    if (timeLeft <= 0) {
+      handleApprove(true)
+      return
+    }
+    const timer = setInterval(() => setTimeLeft(t => t - 1), 1000)
+    return () => clearInterval(timer)
+  }, [autoConfirm, timeLeft, isApproving])
+
+  const handleApprove = async (auto = false) => {
+    setIsApproving(true)
+    try {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
+      await fetch(`${apiBase}/api/scans/${scanId}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auto_confirmed: auto })
+      })
+    } catch (e) {
+      console.error(e)
+      setIsApproving(false)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-blue-900/40 bg-blue-950/20 p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Shield size={14} className="text-blue-400" />
+        <h3 className="text-xs font-bold text-blue-400 uppercase tracking-wider">Human-in-the-Loop</h3>
+        <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-mono animate-pulse">AWAITING_APPROVAL</span>
+      </div>
+      
+      <div className="bg-[#040810] p-3 rounded-lg border border-slate-800 mb-4 overflow-x-auto max-h-48">
+        <pre className="text-[10px] font-mono text-slate-300">
+          <code>{patchDiff}</code>
+        </pre>
+      </div>
+      
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <input 
+            type="checkbox" 
+            id="autoConfirm"
+            checked={autoConfirm}
+            onChange={(e) => {
+              setAutoConfirm(e.target.checked)
+              if (e.target.checked) setTimeLeft(5)
+            }}
+            className="rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500 w-3 h-3 cursor-pointer"
+          />
+          <label htmlFor="autoConfirm" className="text-xs text-slate-300 cursor-pointer">Auto-Confirm (Demo Mode)</label>
+        </div>
+
+        {autoConfirm && !isApproving && (
+          <div className="w-full bg-slate-800 rounded-full h-1 overflow-hidden">
+            <div 
+              className="bg-blue-500 h-1 transition-all duration-1000 ease-linear"
+              style={{ width: `${(timeLeft / 5) * 100}%` }}
+            />
+          </div>
+        )}
+
+        <button
+          onClick={() => handleApprove(false)}
+          disabled={isApproving}
+          className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+        >
+          {isApproving ? <span className="animate-pulse">Approving...</span> : "Approve & Open PR"}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────
 
 export default function ScanPage() {
   const params    = useParams()
   const scanId    = (params?.scanId as string) ?? "demo"
-  const { agentStates, findings, scanComplete, isStarted } = useAgentStream(scanId)
+  const { agentStates, findings, scanComplete, isStarted, awaitingApproval, patchDiff } = useAgentStream(scanId)
 
   const criticalCount = findings.filter(f => f.severity === "critical").length
   const highCount     = findings.filter(f => f.severity === "high").length
@@ -584,12 +681,20 @@ export default function ScanPage() {
           {/* Financial Impact */}
           <FinancialImpact findings={findings} />
 
+          {/* HITL Gate */}
+          {awaitingApproval && patchDiff && (
+            <HitlGate scanId={scanId} patchDiff={patchDiff} />
+          )}
+
           {/* Fix PR */}
           {scanComplete?.remediation_pr_url && (
             <div className="rounded-xl border border-emerald-900/40 bg-emerald-950/20 p-4">
               <div className="flex items-center gap-2 mb-2">
                 <GitPullRequest size={13} className="text-emerald-400" />
                 <h3 className="text-xs font-bold text-emerald-400">Fix PR Ready</h3>
+                <span className="ml-auto text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded-full flex items-center gap-1 font-semibold">
+                  <CheckCircle2 size={10} /> Verified
+                </span>
               </div>
               <p className="text-xs text-slate-500 mb-3 leading-relaxed">
                 ARGUS auto-generated a remediation PR with patches for all critical findings.
