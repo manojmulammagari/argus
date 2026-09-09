@@ -25,7 +25,7 @@ Security tools today are fundamentally broken: they throw a massive list of aler
 ---
 
 ## 💻 Interactive Dashboard UI
-<img src="https://raw.githubusercontent.com/manojmulammagari/argus/main/assets/ui-preview.png" alt="ARGUS Dashboard Preview" .../>
+
 The engine is deployed with a real-time interactive dashboard. Users can watch the AI agents reason and stream their findings character-by-character via Server-Sent Events (SSE).
 
 <div align="center">
