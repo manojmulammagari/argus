@@ -84,8 +84,6 @@ This project was built to transition static code analysis into a live, multi-age
 
 To run the full ARGUS predictive engine and web application on your local machine:
 
-## 🚀 Quick Start Guide
-
 ### 1. Start Infrastructure (PostgreSQL & Redis)
 ```bash
 docker compose up -d
