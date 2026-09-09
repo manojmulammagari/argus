@@ -25,7 +25,7 @@ Security tools today are fundamentally broken: they throw a massive list of aler
 ---
 
 ## 💻 Interactive Dashboard UI
-
+<img src="https://raw.githubusercontent.com/manojmulammagari/argus/main/assets/ui-preview.png" alt="ARGUS Dashboard Preview" .../>
 The engine is deployed with a real-time interactive dashboard. Users can watch the AI agents reason and stream their findings character-by-character via Server-Sent Events (SSE).
 
 <div align="center">
@@ -49,9 +49,9 @@ ARGUS is powered by six specialized AI agents running concurrently to provide co
 
 | Agent | Role / Capability | 
 | :--- | :--- | 
-| **AST Sentinel** | Parses the AST and scans against CWE pattern families using regex + LLM validation. | 
+| **AST Sentinel** | Parses the AST and scans against CWE pattern families using regex + Groq Llama-3 validation. | 
 | **Policy Guard** | Cross-references every added line against SOC2, HIPAA, and PCI-DSS compliance articles. |
-| **Arch Auditor** | Analyzes architectural design flaws and exposed boundaries. | 
+| **Arch Auditor** | Analyzes architectural design flaws and uploaded diagrams using Google Gemini Vision. | 
 | **ThreatMind** | Applies structured STRIDE threat modeling against all modified components. | 
 | **Red Team Ω** | *Unique:* Constructs a realistic, step-by-step attacker kill chain from the findings. | 
 | **RemedyBot** | Generates concrete before/after code patches to automatically secure the PR. | 
@@ -85,13 +85,27 @@ This project was built to transition static code analysis into a live, multi-age
 ### 1. Start Infrastructure (PostgreSQL & Redis)
 ```bash
 docker compose up -d
+```
 
+### 2. Launch Backend (FastAPI + Groq / Gemini)
+```bash
 cd backend
 pip install -r requirements.txt
-# Copy backend/.env.example to backend/.env and add keys
-uvicorn main_api:app --reload --host 0.0.0.0 --port 8000
+# Copy backend/.env.example to backend/.env and populate your keys
+python -m uvicorn main_api:app --reload --host 0.0.0.0 --port 8000
+```
 
+### 3. Launch Frontend (Next.js 14)
+```bash
 cd frontend
 npm install
 npm run dev
 # Dashboard runs at http://localhost:3000
+```
+
+### 4. Trigger Demo Scan
+```bash
+curl -X POST "[http://127.0.0.1:8000/api/scans/demo](http://127.0.0.1:8000/api/scans/demo)" \
+     -H "Content-Type: application/json" \
+     -d '{"repo_full_name": "demo/vulnerable-app", "pr_number": 42}'
+```
