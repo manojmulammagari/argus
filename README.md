@@ -82,19 +82,16 @@ This project was built to transition static code analysis into a live, multi-age
 
 ## 🚀 Quick Start Guide
 
-To run the full ARGUS predictive engine and web application on your local machine:
-
 ### 1. Start Infrastructure (PostgreSQL & Redis)
 ```bash
 docker compose up -d
 
 cd backend
 pip install -r requirements.txt
-# Copy backend/.env.example to backend/.env and populate your keys
+# Copy backend/.env.example to backend/.env and add keys
 uvicorn main_api:app --reload --host 0.0.0.0 --port 8000
 
 cd frontend
 npm install
 npm run dev
 # Dashboard runs at http://localhost:3000
-
