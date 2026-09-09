@@ -9,9 +9,9 @@ import {
 } from "lucide-react"
 
 const AGENTS = [
-  { name: "AST Sentinel", icon: Shield, color: "text-purple-400 bg-purple-500/10 border-purple-500/20", desc: "CWE regex heuristics + Claude semantic validation" },
+  { name: "AST Sentinel", icon: Shield, color: "text-purple-400 bg-purple-500/10 border-purple-500/20", desc: "CWE regex heuristics + Groq Llama-3.3 semantic validation" },
   { name: "Policy Guard", icon: Scale, color: "text-blue-400 bg-blue-500/10 border-blue-500/20", desc: "SOC2, HIPAA, PCI-DSS compliance enforcement" },
-  { name: "Arch Auditor", icon: Eye, color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/20", desc: "Claude Vision architecture threat modeling" },
+  { name: "Arch Auditor", icon: Eye, color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/20", desc: "Gemini Vision architecture threat modeling" },
   { name: "ThreatMind", icon: Brain, color: "text-amber-400 bg-amber-500/10 border-amber-500/20", desc: "Autonomous STRIDE threat surface generation" },
   { name: "RemedyBot", icon: Wrench, color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20", desc: "Auto-generates and commits validated fix PRs" },
   { name: "Red Team Ω", icon: Target, color: "text-red-400 bg-red-500/10 border-red-500/20", desc: "Adversarial kill-chain simulation and impact path" },
