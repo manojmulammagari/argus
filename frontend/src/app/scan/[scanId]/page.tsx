@@ -88,7 +88,7 @@ function useAgentStream(scanId: string) {
   const [agentStates, setAgentStates] = useState<Record<AgentKey, AgentState>>(
     () => Object.fromEntries(
       Object.keys(AGENT_CONFIG).map(k => [k, { status: "idle", traces: [], findingCount: 0 }])
-    ) as Record<AgentKey, AgentState>
+    ) as unknown as Record<AgentKey, AgentState>
   )
   const [findings,     setFindings]     = useState<Finding[]>([])
   const [scanComplete, setScanComplete] = useState<ScanComplete | null>(null)

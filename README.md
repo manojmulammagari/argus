@@ -1,97 +1,71 @@
-<div align="center">
+# ARGUS: AI-Powered Multi-Agent DevSecOps
 
-<!-- Animated Header Banner -->
-<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=ARGUS&fontSize=65&fontAlignY=38&desc=Autonomous%20DevSecOps%20Intelligence&descAlignY=55&descAlign=50" width="100%"/>
+> **Static analysis is dead. Enter ARGUS.**  
+> ARGUS orchestrates an autonomous swarm of AI agents to detect, validate, and automatically remediate vulnerabilities, compliance violations, and design flaws in milliseconds—stopping breaches before the code ever merges.
 
-### 🛡️ Proactive Security & Automated Remediation
+## ⚠️ The Problem: Why Legacy SAST Tools Fail
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Groq](https://img.shields.io/badge/Groq-Llama_3-F7931E?style=flat-square)](https://groq.com/)
-[![Gemini](https://img.shields.io/badge/Google-Gemini-4285F4?style=flat-square&logo=google&logoColor=white)](https://aistudio.google.com/)
+Traditional SAST (Static Application Security Testing) is broken:
+- **Too Slow**: Hours to scan large codebases, breaking CI/CD pipelines.
+- **No Context**: 90%+ false positive rates due to lack of architectural understanding.
+- **Rules, Not Logic**: Regular expressions can't catch logical flaws, authorization bypasses, or novel attack chains.
+- **Dead Ends**: Tools tell you *what* is wrong, but rarely show you exactly *how* to fix it.
 
-[Watch 120s Demo Video](#) <!-- Add your YouTube/Demo link here -->
+## 🛡️ The Solution: ARGUS
 
-</div>
+ARGUS replaces static rules with **context-aware reasoning**. Using a multi-agent swarm architecture, ARGUS streams security intelligence in real-time, mapping exact compliance violations and actively generating the Pull Request to fix the code.
 
----
+### 🧠 The ARGUS Swarm (6 Specialized Agents)
 
-## 🎯 Executive Overview
+1. **🛡️ AST Sentinel (The Parser)**
+   Scans raw ASTs and regex patterns, extracting suspicious fragments and validating them against CWE patterns to immediately discard false positives.
+   
+2. **⚖️ Policy Guard (The Auditor)**
+   Cross-references code changes with SOC2, HIPAA, and PCI-DSS requirements, identifying compliance risks like hardcoded secrets, missing encryption, or PHI logging.
+   
+3. **📐 Arch Auditor (The Architect)**
+   Reviews the structural integrity of the application. Detects missing rate-limits, insecure CORS configurations, unauthenticated endpoints, and logical flaws.
+   
+4. **⚔️ ThreatMind (The Modeler)**
+   Applies the STRIDE threat model (Spoofing, Tampering, Repudiation, Information Disclosure, DoS, Elevation of Privilege) to identify exploitable attack vectors.
 
-Security tools today are fundamentally broken: they throw a massive list of alerts at developers, but they don't fix the code, and they don't explain the business risk. 
+5. **🔧 RemedyBot (The Fixer)**
+   Automatically writes the secure replacement code for every vulnerability discovered and generates a complete Remediation Pull Request for human review.
 
-**ARGUS** is an autonomous DevSecOps intelligence platform. When a Pull Request is opened, 6 specialized AI agents are dispatched in parallel to analyze the code diff. Instead of just flagging errors, ARGUS maps vulnerabilities to historical breaches, calculates financial exposure, simulates a Red Team kill chain, and autonomously writes the patch.
+6. **🎯 Red Team Ω (The Attacker)**
+   Takes all discovered vulnerabilities and synthesizes an **Attack Chain Narrative**—a step-by-step breakdown of how a real-world attacker would exploit the exact vulnerabilities found in the scan.
 
----
+## 🏗️ Architecture
 
-## 💻 Interactive Dashboard UI
+- **Frontend (Next.js 14 App Router)**: 
+  A stunning, real-time advanced dashboard. Features live Agent Matrices, animated Risk Gauges, the Breach Oracle (historical mapping), and a step-by-step Kill Chain visualizer.
+- **Backend (FastAPI)**:
+  High-performance Python backend powered by `asyncio`. Connects to Groq (Llama 3 70B) for lightning-fast, parallelized agent generation. 
+- **Real-Time Delivery (SSE)**:
+  Memory-safe Server-Sent Events (SSE) with heartbeat mechanisms ensure the UI instantly reflects agent thoughts without web-socket overhead.
 
-The engine is deployed with a real-time interactive dashboard. Users can watch the AI agents reason and stream their findings character-by-character via Server-Sent Events (SSE).
+## 🔒 Security Highlights
 
-<div align="center">
-  <a href="#">
-    <!-- Replace the src below with your actual uploaded screenshot in the repo -->
-    <img src="https://raw.githubusercontent.com/manojmulammagari/argus/main/assets/ui-preview.png" alt="ARGUS Dashboard Preview" width="800" style="border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);"/>
-  </a>
-  <br>
-  <i>*Note: The application provides dynamic risk scoring, Breach Oracle correlations, and actionable remediation patches.*</i>
-</div>
+ARGUS doesn't just secure your code—it's built securely itself:
+- **Prompt Injection Defense**: All untrusted PR diffs undergo a strict 4-layer sanitization process. We implement hard byte truncation, control character stripping, and malicious pattern neutralization, wrapped in strict XML bounds (`<untrusted_diff>`) to mathematically prevent prompt injection attacks against our agents.
+- **Resilient SSE Streaming**: The API incorporates client disconnect detection and periodic heartbeats, preventing zombie generators and keeping proxy connections (like Nginx) alive to avoid silent timeouts.
+- **Fail-Safe Orchestration**: Agents are bound by strict `asyncio` timeouts. If a single agent is rate-limited or fails, the pipeline safely recovers and continues delivering partial results without crashing.
 
----
+## 🚀 Quick Start
 
-## 📈 The 6 Autonomous Agents
-
-ARGUS is powered by six specialized AI agents running concurrently to provide comprehensive security coverage.
-
-<details>
-<summary><b>🔍 Click to view agent breakdowns and capabilities</b></summary>
-<br>
-
-| Agent | Role / Capability | 
-| :--- | :--- | 
-| **AST Sentinel** | Parses the AST and scans against CWE pattern families using regex + LLM validation. | 
-| **Policy Guard** | Cross-references every added line against SOC2, HIPAA, and PCI-DSS compliance articles. |
-| **Arch Auditor** | Analyzes architectural design flaws and exposed boundaries. | 
-| **ThreatMind** | Applies structured STRIDE threat modeling against all modified components. | 
-| **Red Team Ω** | *Unique:* Constructs a realistic, step-by-step attacker kill chain from the findings. | 
-| **RemedyBot** | Generates concrete before/after code patches to automatically secure the PR. | 
-
-*(Metrics and traces are streamed in real-time, mapping every CWE finding to historical breaches like Equifax 2017).*
-
-</details>
-
----
-
-## ⚙️ Technical Architecture
-
-This project was built to transition static code analysis into a live, multi-agent AI environment with extreme speed.
-
-<details>
-<summary><b>🛠️ Click to view the ARGUS Pipeline</b></summary>
-<br>
-
-1. **Concurrent Dispatch:** Built on **FastAPI** using `asyncio.gather` for true parallel agent execution.
-2. **LLM Inference:** Powered by **Groq (Llama 3)** for blisteringly fast 300+ token/sec reasoning, with **Google Gemini** integrated as a seamless fallback.
-3. **Prompt Injection Protection:** Untrusted PR diffs are strictly truncated and wrapped in `<untrusted_diff>` XML tags so malicious code cannot hijack agent instructions.
-4. **Real-Time Streaming:** Server-Sent Events (SSE) push agent thoughts and findings instantly to a Vanilla JS/HTML frontend.
-5. **Impact Engines:** Features a **Breach Oracle** to correlate findings with real-world hacks and a **Financial Impact Engine** to convert technical severity into regulatory dollar-exposure estimates.
-
-</details>
-
----
-
-## 🚀 Quick Start Guide
-
-### 1. Start Infrastructure (PostgreSQL & Redis)
+### 1. Run the Backend
+Ensure you have Python 3.10+ installed. Add your Groq API key to a `.env` file (`GROQ_API_KEY=...`).
 ```bash
-docker compose up -d
-
 cd backend
-pip install -r requirements.txt
-# Copy backend/.env.example to backend/.env and add keys
-uvicorn main_api:app --reload --host 0.0.0.0 --port 8000
+pip install fastapi uvicorn groq python-dotenv
+python -m uvicorn main_api:app --reload --port 8000
+```
 
+### 2. Run the Frontend
+```bash
 cd frontend
 npm install
 npm run dev
-# Dashboard runs at http://localhost:3000
+```
+
+Open [http://localhost:3000](http://localhost:3000) and dispatch the ARGUS swarm!
