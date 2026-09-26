@@ -8,6 +8,8 @@ build/
 
 # Environments
 .env
+.env.local
+.env*.local
 .venv/
 venv/
 

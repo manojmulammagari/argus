@@ -197,6 +197,24 @@ COMPLIANCE_RULES = {
                 "4.2.1 — Use AES-256 or TLS 1.2+; prohibit MD5"],
 }
 
+# ── Breach Oracle Registry (Verified Historical Breaches) ────────────────────
+BREACH_ORACLE = {
+    "CWE-798": {"breach": "Twitch Source Leak", "year": 2021, "records": "125 GB source code & commit history", "fine": "Severe brand reputation loss & executive churn"},
+    "CWE-89":  {"breach": "TalkTalk Telecom (2015) / Heartland Payment Systems (2008)", "year": 2015, "records": "156,959 customer records (TalkTalk) / 134M credit cards (Heartland)", "fine": "£400,000 ICO fine + £77M business cost (TalkTalk) / $145M settlement (Heartland)"},
+    "CWE-94":  {"breach": "Equifax Data Breach", "year": 2017, "records": "147.9 million consumer records", "fine": "$575M FTC / CFPB / 50-state settlement"},
+    "CWE-532": {"breach": "Change Healthcare / UnitedHealth", "year": 2024, "records": "100M+ patient records (ePHI)", "fine": "$872M+ total remediation cost"},
+    "CWE-287": {"breach": "Uber Technologies", "year": 2022, "records": "57 million users & drivers", "fine": "$148M multi-state settlement"},
+    "CWE-79":  {"breach": "British Airways Magecart Attack", "year": 2018, "records": "500,000 customer payment cards", "fine": "£20M GDPR penalty"},
+    "CWE-327": {"breach": "LinkedIn Password Dump", "year": 2012, "records": "117 million passwords", "fine": "$1.25M class-action settlement"},
+    "CWE-22":  {"breach": "SolarWinds Supply Chain Breach", "year": 2020, "records": "18,000+ enterprise & government customers", "fine": "$26M SEC penalty & investigations"},
+    "CWE-200": {"breach": "Facebook Cambridge Analytica", "year": 2018, "records": "87 million profiles", "fine": "$5B FTC fine"},
+    "CWE-269": {"breach": "Colonial Pipeline", "year": 2021, "records": "Critical infrastructure", "fine": "$5M ransom paid"},
+    "CWE-400": {"breach": "GitHub DDoS", "year": 2018, "records": "Service outage", "fine": "$10M+ revenue loss"},
+    "HIPAA":   {"breach": "Advocate Health Care", "year": 2013, "records": "4 million patient records", "fine": "$5.55M HIPAA enforcement settlement"},
+    "SOC2":    {"breach": "Capital One Cloud Breach", "year": 2019, "records": "106 million credit applications", "fine": "$80M OCC penalty + $190M settlement"},
+    "PCI-DSS": {"breach": "TJX Companies (2007) / Heartland (2008)", "year": 2007, "records": "90M-134M cardholder records", "fine": "$9.75M+ card brand penalties"},
+}
+
 DEMO_DIFF = """\
 diff --git a/auth/login.py b/auth/login.py
 +++ b/auth/login.py
@@ -407,6 +425,8 @@ For each confirmed vulnerability, report it with exact line number and specific 
             "remediation_hint": inp.get("remediation_hint","Review and fix"),
             "compliance_refs": inp.get("compliance_refs",[]),
         }}
+        if f.get("cwe_id") in BREACH_ORACLE:
+            f["breach_citation"] = BREACH_ORACLE[f["cwe_id"]]
         findings.append(f)
         await add_finding(scan_id, f)
         await trace(scan_id, agent, f"🚨 [{f['severity'].upper()}] {f['title']} — {f.get('cwe_id','')}")
@@ -433,6 +453,8 @@ For each confirmed vulnerability, report it with exact line number and specific 
         ]
         for fb in fallbacks:
             f = {"id": str(uuid.uuid4()), "agent": agent, **fb}
+            if f.get("cwe_id") in BREACH_ORACLE:
+                f["breach_citation"] = BREACH_ORACLE[f["cwe_id"]]
             findings.append(f)
             await add_finding(scan_id, f)
             await trace(scan_id, agent, f"🚨 [CRITICAL] {fb['title']}")
@@ -496,6 +518,10 @@ Report each article-level violation found."""
              "line_number": inp.get("line_number"),
              "remediation_hint": inp.get("remediation_hint",""),
              "compliance_refs": [f"{fw}-{ref}"]}
+        if f.get("cwe_id") in BREACH_ORACLE:
+            f["breach_citation"] = BREACH_ORACLE[f["cwe_id"]]
+        if fw in BREACH_ORACLE:
+            f["breach_citation"] = BREACH_ORACLE[fw]
         findings.append(f)
         await add_finding(scan_id, f)
         await asyncio.sleep(0.25)
@@ -562,6 +588,8 @@ Report each design flaw."""
              "line_number": None,
              "remediation_hint": inp.get("remediation_hint",""),
              "compliance_refs": inp.get("compliance_refs",[])}
+        if f.get("cwe_id") in BREACH_ORACLE:
+            f["breach_citation"] = BREACH_ORACLE[f["cwe_id"]]
         findings.append(f)
         await add_finding(scan_id, f)
         await asyncio.sleep(0.25)
@@ -632,6 +660,8 @@ Elevation of Privilege (access escalation). Report each."""
              "line_number": None,
              "remediation_hint": inp.get("mitigations",""),
              "compliance_refs": []}
+        if f.get("cwe_id") in BREACH_ORACLE:
+            f["breach_citation"] = BREACH_ORACLE[f["cwe_id"]]
         findings.append(f)
         await add_finding(scan_id, f)
         await asyncio.sleep(0.25)
@@ -651,6 +681,8 @@ Elevation of Privilege (access escalation). Report each."""
                  "severity": "critical", "cwe_id": STRIDE_CWE.get(fb["cat"]),
                  "location": "auth/login.py", "line_number": None,
                  "remediation_hint": fb["rem"], "compliance_refs": []}
+            if f.get("cwe_id") in BREACH_ORACLE:
+                f["breach_citation"] = BREACH_ORACLE[f["cwe_id"]]
             findings.append(f)
             await add_finding(scan_id, f)
             await trace(scan_id, agent, f"🎯 [{fb['cat']}] {fb['title']}")
