@@ -1,0 +1,22 @@
+<svg width="1200" height="280" viewBox="0 0 1200 280" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="argusGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="50%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#a855f7" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="280" fill="#060b14"/>
+  <circle cx="600" cy="90" r="220" fill="url(#glow)"/>
+  <g opacity="0.9">
+    <ellipse cx="600" cy="80" rx="34" ry="20" fill="none" stroke="url(#argusGrad)" stroke-width="3"/>
+    <circle cx="600" cy="80" r="8" fill="url(#argusGrad)"/>
+  </g>
+  <text x="600" y="175" font-family="Arial, sans-serif" font-size="88" font-weight="900" fill="url(#argusGrad)" text-anchor="middle" letter-spacing="4">ARGUS</text>
+  <text x="600" y="215" font-family="Arial, sans-serif" font-size="20" fill="#94a3b8" text-anchor="middle" letter-spacing="2">AUTONOMOUS DEVSECOPS INTELLIGENCE</text>
+  <text x="600" y="245" font-family="monospace" font-size="14" fill="#475569" text-anchor="middle">6 AI Agents · Real-Time SSE · Groq + Gemini</text>
+</svg>

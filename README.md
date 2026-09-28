@@ -1,51 +1,93 @@
-# ARGUS: AI-Powered Multi-Agent DevSecOps
+<div align="center">
 
-> When a PR opens, ARGUS dispatches six autonomous AI agents in parallel to hunt vulnerabilities, map every finding to a real historical breach and its dollar cost, simulate the exact attack chain a hacker would run, and draft the fix — all streamed live over Server-Sent Events. It's not a linter with a chatbot bolted on; it's a security team that never sleeps and shows you its reasoning as it works.
+<img src="assets/banner.svg" alt="ARGUS — Autonomous DevSecOps Intelligence" width="100%"/>
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
-[![Next.js 16](https://img.shields.io/badge/Next.js-16.3-black.svg)](https://nextjs.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-green.svg)](https://fastapi.tiangolo.com)
-[![License: MIT](https://img.shields.io/badge/license-MIT-purple.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.13-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Next.js](https://img.shields.io/badge/Next.js-16-black?style=flat-square&logo=next.js&logoColor=white)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Groq](https://img.shields.io/badge/Groq-Llama_3.3-F7931E?style=flat-square)](https://groq.com/)
+[![Gemini](https://img.shields.io/badge/Google-Gemini-4285F4?style=flat-square&logo=google&logoColor=white)](https://aistudio.google.com/)
+[![CI](https://github.com/manojmulammagari/argus/actions/workflows/ci.yml/badge.svg)](https://github.com/manojmulammagari/argus/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md)
+
+### Security that thinks alongside you, not just at you.
+
+**Six autonomous AI agents. One pull request. Zero manual triage.**
+
+</div>
 
 ---
 
-## ⚠️ The Problem: Why Legacy SAST Tools Fail
+Security tools today throw developers a wall of alerts and walk away — no fix, no context, no sense of what actually matters. **ARGUS** takes the opposite approach: when a PR opens, six specialized AI agents scan it in parallel, cite the real historical breach your bug resembles, simulate the exact attack chain a hacker would run, and draft the fix — streaming every step of their reasoning to you live.
 
-Traditional SAST (Static Application Security Testing) is broken:
-- **Too Slow**: Hours to scan large codebases, breaking CI/CD pipelines.
-- **No Context**: 90%+ false positive rates due to lack of architectural understanding.
-- **Rules, Not Logic**: Regular expressions can't catch logical flaws, authorization bypasses, or novel attack chains.
-- **Dead Ends**: Tools tell you *what* is wrong, but rarely show you exactly *how* to fix it.
+Named for [Argus Panoptes](https://en.wikipedia.org/wiki/Argus_Panoptes), the hundred-eyed giant of Greek myth who never fully slept — because some of his eyes were always open.
 
-## 🛡️ The Solution: ARGUS
+## 📖 Table of Contents
 
-ARGUS replaces static rules with **context-aware reasoning**. Using a multi-agent swarm architecture, ARGUS streams security intelligence in real-time, mapping exact compliance violations and actively generating the Pull Request to fix the code.
+- [Quick Start](#-quick-start)
+- [The 6 Autonomous Agents](#-the-6-autonomous-agents)
+- [Architecture](#-architecture)
+- [Security Defenses](#-security-defenses)
+- [Vision & Roadmap](#-vision--roadmap)
+- [Contributing](#contributing)
+- [License](#license)
 
-### 🧠 The ARGUS Swarm (6 Specialized Agents)
+## 🚀 Quick Start
 
-1. **🛡️ AST Sentinel (The Parser)**
-   Scans raw ASTs and regex patterns, extracting suspicious fragments and validating them against CWE patterns to immediately discard false positives.
+**Fastest path** (requires `make`):
+```bash
+make install
+make run
+```
 
-2. **⚖️ Policy Guard (The Auditor)**
-   Cross-references code changes with SOC2, HIPAA, and PCI-DSS requirements, identifying compliance risks like hardcoded secrets, missing encryption, or PHI logging.
+**Manual path:**
+```bash
+# 1. Infrastructure (optional — the app runs fine without Postgres/Redis)
+docker compose up -d
+```
+```bash
+# 2. Backend
+cd backend
+pip install -r requirements-dev.txt
+cp .env.example .env   # add your GROQ_API_KEY and GEMINI_API_KEY
+uvicorn main_api:app --reload --host 0.0.0.0 --port 8000
+```
+```bash
+# 3. Frontend
+cd frontend
+npm install
+npm run dev
+# Dashboard: http://localhost:3000
+```
 
-3. **📐 Arch Auditor (The Architect)**
-   Reviews the structural integrity of the application. Detects missing rate-limits, insecure CORS configurations, unauthenticated endpoints, and logical flaws.
+Free API keys: [Groq](https://console.groq.com/keys) · [Gemini](https://aistudio.google.com/apikey). Set `DEMO_MODE=true` in `backend/.env` to run the full flow without a real GitHub token.
 
-4. **⚔️ ThreatMind (The Modeler)**
-   Applies the STRIDE threat model (Spoofing, Tampering, Repudiation, Information Disclosure, DoS, Elevation of Privilege) to identify exploitable attack vectors.
+## 🤖 The 6 Autonomous Agents
 
-5. **🔧 RemedyBot (The Fixer)**
-   Automatically writes the secure replacement code for every vulnerability discovered and generates a complete Remediation Pull Request for human review.
+<details>
+<summary><b>Click to expand agent breakdown</b></summary>
+<br>
 
-6. **🎯 Red Team Ω (The Attacker)**
-   Takes all discovered vulnerabilities and synthesizes an **Attack Chain Narrative** — a step-by-step breakdown of how a real-world attacker would exploit the exact vulnerabilities found in the scan.
+| Agent | Role / Capability |
+| :--- | :--- |
+| **AST Sentinel** | Parses the AST and scans against CWE pattern families using regex + LLM validation. |
+| **Policy Guard** | Cross-references every added line against SOC2, HIPAA, and PCI-DSS compliance articles. |
+| **Arch Auditor** | Analyzes architectural design flaws and exposed boundaries. |
+| **ThreatMind** | Applies structured STRIDE threat modeling against all modified components. |
+| **Red Team Ω** | Constructs a realistic, step-by-step attacker kill chain from the findings. |
+| **RemedyBot** | Generates concrete before/after code patches to secure the PR. |
 
-### 💀 Breach Oracle
+Every CWE finding is cross-referenced against real historical breaches (Equifax 2017, Capital One 2019...) with their actual regulatory fines.
 
-Every finding is automatically cross-referenced against a registry of **verified historical breaches** — Equifax ($575M), Capital One ($80M), British Airways (£20M), Change Healthcare ($872M), and more. Judges see the real-world consequence of each vulnerability the moment it appears.
+</details>
 
 ## 🏗️ Architecture
+
+<details>
+<summary><b>Click to expand the full pipeline + SSE event contract</b></summary>
+<br>
 
 ```mermaid
 flowchart LR
@@ -61,44 +103,52 @@ flowchart LR
     SSE --> UI[Next.js Live Dashboard]
 ```
 
-The backend is a single FastAPI process powered by `asyncio`. All four analysis agents run concurrently inside `asyncio.gather`, each wrapped in an independent timeout guard. Groq (Llama 3.3 70B) is the primary LLM — free and streaming at 300+ tokens/sec — with Gemini 2.0 Flash as an automatic fallback. The frontend connects via Server-Sent Events and renders each agent's thought traces, findings, and the final kill chain in real time.
+**SSE event contract** (`GET /api/stream/{scan_id}`):
 
-## 🔒 Security Defenses
+| `type` | Payload | Meaning |
+|---|---|---|
+| `trace` | `{agent, text}` | An agent's live reasoning line |
+| `status` | `{agent, status}` | `running` \| `complete` \| `error` |
+| `finding` | `{finding: {...}}` | A new vulnerability — severity, CWE, remediation, breach citation |
+| `scan_complete` | `{risk_score, attack_chain, remediation_pr_url}` | Final aggregated result |
+| `timeout` / `done` | — | Stream lifecycle signals |
 
-ARGUS doesn't just secure your code — it's built securely itself:
+Full design notes: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-- **Prompt Injection Defense**: Untrusted PR diffs are hard-truncated to 8 KB, stripped of control characters, scanned for known prompt-injection phrasing (jailbreak patterns, instruction override attempts), and wrapped in `<untrusted_diff>` XML boundary tags before ever reaching an LLM prompt. A comment like `</untrusted_diff>\nIgnore all previous instructions` is caught and redacted before the model sees it.
-- **Resilient SSE Streaming**: The stream endpoint detects client disconnects via `request.is_disconnected()`, sends periodic heartbeats to keep proxies alive, and enforces a 90-second idle timeout — preventing zombie generators and silent hangs.
-- **Fail-Safe Orchestration**: Each agent runs under an independent `asyncio.wait_for` timeout (90s). If a single agent is rate-limited, times out, or throws an exception, the pipeline safely recovers and continues delivering partial results without crashing.
-- **Memory-Safe**: An eviction routine (`_evict_old_scans`) garbage-collects scan data older than 1 hour on every new request, preventing unbounded memory growth across the server process lifetime.
+</details>
 
-## 🚀 Quick Start
+## 🔐 Security Defenses
 
-```bash
-# 1. Infrastructure (optional — the app runs fine without Postgres/Redis)
-docker compose up -d
-```
+<details>
+<summary><b>Click to expand — ARGUS scans code for a living, so it holds itself to the same bar</b></summary>
+<br>
 
-```bash
-# 2. Backend
-cd backend
-pip install -r requirements.txt
-cp .env.example .env   # add your GROQ_API_KEY and GEMINI_API_KEY
-uvicorn main_api:app --reload --host 0.0.0.0 --port 8000
-```
+- **Prompt-injection hardening.** Every PR diff is hard-truncated, stripped of control characters, scanned for known injection phrasing, and wrapped in `<untrusted_diff>` boundary tags before it ever reaches an LLM prompt.
+- **Resilient streaming.** The SSE endpoint detects client disconnects, sends periodic heartbeats, and never terminates an active scan early.
+- **Fault isolation.** Each of the 6 agents runs under an independent timeout inside `asyncio.gather` — one hung or rate-limited call can't take down the pipeline.
 
-```bash
-# 3. Frontend
-cd frontend
-npm install
-npm run dev
-# Dashboard: http://localhost:3000
-```
+See [`SECURITY.md`](SECURITY.md) for our vulnerability disclosure policy.
 
-**Free API keys:** [Groq](https://console.groq.com/keys) · [Gemini](https://aistudio.google.com/apikey)
+</details>
 
-Set `DEMO_MODE=true` in `backend/.env` to run the full demo flow without requiring a real GitHub token.
+## 🗺️ Vision & Roadmap
 
-## 📄 License
+**Now** — parallel multi-agent scanning, live SSE dashboard, injection-hardened ingestion, automated risk scoring and kill-chain simulation.
 
-MIT
+**Next** — a real GitHub App install flow (webhook-triggered scans on every PR instead of a manual demo trigger), Redis-backed distributed agent execution for concurrent multi-repo scanning, persisted scan history.
+
+**Later** — a VS Code extension for pre-commit scanning, custom compliance rule packs (GDPR, FedRAMP), a self-hosted mode for orgs that can't send code to third-party LLM APIs.
+
+## Contributing
+
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup, branch conventions, and PR expectations.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
+
+---
+
+<div align="center">
+<sub>ARGUS never fully sleeps.</sub>
+</div>
