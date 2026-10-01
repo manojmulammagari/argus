@@ -1,4 +1,4 @@
-.PHONY: install run run-backend run-frontend test build clean infra
+.PHONY: install run-backend run-frontend run-all test build clean infra
 
 install:
 	cd backend && pip install -r requirements-dev.txt
@@ -13,7 +13,7 @@ run-backend:
 run-frontend:
 	cd frontend && npm run dev
 
-run:
+run-all:
 	@trap 'kill 0' EXIT INT TERM; \
 	(cd backend && uvicorn main_api:app --reload --host 0.0.0.0 --port 8000) & \
 	(cd frontend && npm run dev) & \
