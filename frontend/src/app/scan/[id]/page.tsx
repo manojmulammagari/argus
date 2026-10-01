@@ -223,6 +223,8 @@ export default function ScanPage() {
   const [riskScore, setRiskScore] = useState<number | null>(null)
   const [scanComplete, setScanComplete] = useState(false)
   const [remediationUrl, setRemediationUrl] = useState<string | null>(null)
+  const [patchPreview, setPatchPreview] = useState<string | null>(null)
+  const [showPatchModal, setShowPatchModal] = useState(false)
   const [activeTab, setActiveTab] = useState<"agents" | "findings" | "killchain">("agents")
   const [sseError, setSseError] = useState(false)
   const [retryCount, setRetryCount] = useState(0)
@@ -259,6 +261,7 @@ export default function ScanPage() {
           if (data.risk_score !== undefined) setRiskScore(data.risk_score as number)
           if (Array.isArray(data.attack_chain)) setKillChain(data.attack_chain as string[])
           if (data.remediation_pr_url) setRemediationUrl(data.remediation_pr_url as string)
+          if (data.patch_preview) setPatchPreview(data.patch_preview as string)
           setScanComplete(true)
           es.close()
         }
@@ -314,13 +317,19 @@ export default function ScanPage() {
             ) : (
               <span className="text-xs text-emerald-400 flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5" /> Complete</span>
             )}
-            {remediationUrl && (
+            {remediationUrl ? (
               <a href={remediationUrl} target="_blank" rel="noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition"
                 style={{ backgroundColor: "rgba(34,197,94,0.1)", color: "#4ade80", border: "1px solid rgba(34,197,94,0.25)" }}>
                 <ExternalLink className="w-3 h-3" /> Fix PR Ready
               </a>
-            )}
+            ) : patchPreview ? (
+              <button onClick={() => setShowPatchModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition"
+                style={{ backgroundColor: "rgba(34,197,94,0.1)", color: "#4ade80", border: "1px solid rgba(34,197,94,0.25)" }}>
+                View Generated Patch
+              </button>
+            ) : null}
           </div>
         </div>
       </header>
@@ -444,6 +453,20 @@ export default function ScanPage() {
           </div>
         )}
       </div>
+
+      {showPatchModal && patchPreview && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4" onClick={() => setShowPatchModal(false)}>
+          <div className="max-w-2xl w-full max-h-[80vh] overflow-y-auto rounded-xl p-5"
+            style={{ backgroundColor: "#080f1c", border: "1px solid rgba(34,197,94,0.25)" }}
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm font-bold text-emerald-400">Generated Patch (Demo Mode)</span>
+              <button onClick={() => setShowPatchModal(false)} className="text-slate-500 hover:text-slate-300">✕</button>
+            </div>
+            <pre className="text-xs font-mono text-slate-300 whitespace-pre-wrap">{patchPreview}</pre>
+          </div>
+        </div>
+      )}
 
       <style>{`.scrollbar-none::-webkit-scrollbar{display:none}`}</style>
     </div>
