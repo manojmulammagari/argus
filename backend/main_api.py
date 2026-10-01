@@ -13,6 +13,7 @@ Get free keys:
 
 import time
 import asyncio, json, uuid, os, re, sys
+import httpx
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -96,9 +97,24 @@ if not groq_client and not gemini_model:
 
 # ── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="ARGUS")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        # add your deployed frontend URL here once hosted
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 SCANS: dict = {}
+
+# ── Rate-limiting state ──────────────────────────────────────────────────────
+_MAX_CONCURRENT_SCANS = 3
+_SCAN_COOLDOWN_SECS = 5
+_active_scan_count = 0
+_last_scan_started_at = 0.0
 
 # ── Constants ────────────────────────────────────────────────────────────────
 CWE_PATTERNS = {
@@ -277,8 +293,8 @@ async def llm_tool_call(scan_id: str, agent: str, prompt: str,
                          tool_name: str, tool_desc: str, tool_schema: dict) -> list[dict]:
     """
     Calls Groq (free, 300+ tok/s) with function calling.
-    Falls back to Gemini (also free) if Groq hits rate limit.
-    Falls back to [] if neither available — mock data handles that.
+    Falls back to Gemini (also free) if Groq fails or returns no valid tool-call structure.
+    Falls back to [] if neither available.
     """
     results: list[dict] = []
 
@@ -298,6 +314,9 @@ async def llm_tool_call(scan_id: str, agent: str, prompt: str,
                 max_tokens=2000,
                 temperature=0.1,
             )
+
+            # Check if Groq actually attempted tool-call structure
+            has_tool_call_structure = False
             for choice in resp.choices:
                 msg = choice.message
                 # Stream text reasoning as trace
@@ -305,21 +324,32 @@ async def llm_tool_call(scan_id: str, agent: str, prompt: str,
                     for line in (msg.content or "").split("\n")[:2]:
                         if line.strip():
                             await trace(scan_id, agent, f"💬 {line.strip()[:120]}")
-                # Extract tool calls
-                if msg.tool_calls:
+                # Check for tool_calls field on the message object
+                if hasattr(msg, "tool_calls") and msg.tool_calls is not None:
+                    has_tool_call_structure = True
                     for tc in msg.tool_calls:
                         if tc.function.name == tool_name:
                             try:
                                 results.append(json.loads(tc.function.arguments))
-                            except json.JSONDecodeError:
-                                pass
+                            except json.JSONDecodeError as e:
+                                print(f"[ARGUS] {agent} returned malformed JSON: {e}")
+                                await trace(scan_id, agent, "⚠️ LLM response could not be parsed — 0 findings this pass")
+                                await set_status(scan_id, agent, "error")
+                                return []
+
+            if not has_tool_call_structure:
+                # Groq returned 200 but with no tool_calls field — a hallucination.
+                # Fall through to Gemini rather than treating as success.
+                raise ValueError("Groq response missing expected tool-call structure")
+
             return results
         except Exception as e:
             err = str(e)
             if "rate" in err.lower():
                 await trace(scan_id, agent, "⚡ Groq rate limit — switching to Gemini...")
             else:
-                await trace(scan_id, agent, f"⚠️ Groq error: {err[:60]}")
+                print(f"[ARGUS] {agent}: Groq failed ({err[:80]}), falling back to Gemini")
+                await trace(scan_id, agent, f"⚠️ Groq error: {err[:60]} — trying Gemini...")
 
     # ── Try Gemini ────────────────────────────────────────────────────────
     if gemini_model:
@@ -357,6 +387,7 @@ Return ONLY the JSON array, no other text."""
                 results = [parsed]
             return results
         except Exception as e:
+            print(f"[ARGUS] {agent}: Gemini fallback also failed ({str(e)[:80]})")
             await trace(scan_id, agent, f"⚠️ Gemini error: {str(e)[:60]}")
 
     return results
@@ -432,33 +463,8 @@ For each confirmed vulnerability, report it with exact line number and specific 
         await trace(scan_id, agent, f"🚨 [{f['severity'].upper()}] {f['title']} — {f.get('cwe_id','')}")
         await asyncio.sleep(0.2)
 
-    # Guaranteed fallback findings
     if not findings:
-        fallbacks = [
-            {"title":"Hardcoded AWS Secret Key","severity":"critical","cwe_id":"CWE-798",
-             "location":"auth/login.py","line_number":3,
-             "description":"AWS_SECRET_KEY hardcoded in source. Anyone with repo access has full AWS CLI access.",
-             "remediation_hint":"Use AWS Secrets Manager: secret = boto3.client('secretsmanager').get_secret_value(SecretId='prod/aws')['SecretString']",
-             "compliance_refs":["SOC2-CC6.1","PCI-DSS-8.2.1"]},
-            {"title":"SQL Injection via String Concat","severity":"critical","cwe_id":"CWE-89",
-             "location":"auth/login.py","line_number":12,
-             "description":"User input concatenated directly into SQL. Payload: name='; DROP TABLE users; -- dumps entire DB.",
-             "remediation_hint":"Parameterize: cursor.execute('SELECT * FROM users WHERE name = %s', (name,))",
-             "compliance_refs":["SOC2-CC6.6","PCI-DSS-6.3.1"]},
-            {"title":"PHI Written to Application Logs","severity":"critical","cwe_id":"CWE-532",
-             "location":"auth/login.py","line_number":7,
-             "description":"Patient SSN, DOB, and Diagnosis appear in INFO logs. Any log aggregator (Datadog/CloudWatch) now has raw PHI.",
-             "remediation_hint":"Log only patient_id: logging.info(f'Patient retrieved: {patient_id}'). PHI never in logs.",
-             "compliance_refs":["HIPAA-164.312(b)","SOC2-CC6.7"]},
-        ]
-        for fb in fallbacks:
-            f = {"id": str(uuid.uuid4()), "agent": agent, **fb}
-            if f.get("cwe_id") in BREACH_ORACLE:
-                f["breach_citation"] = BREACH_ORACLE[f["cwe_id"]]
-            findings.append(f)
-            await add_finding(scan_id, f)
-            await trace(scan_id, agent, f"🚨 [CRITICAL] {fb['title']}")
-            await asyncio.sleep(0.4)
+        await trace(scan_id, agent, "ℹ️ No vulnerabilities confirmed by LLM — 0 findings this agent")
 
     await trace(scan_id, agent, f"✅ Complete — {len(findings)} vulnerabilities confirmed")
     await set_status(scan_id, agent, "complete")
@@ -527,16 +533,7 @@ Report each article-level violation found."""
         await asyncio.sleep(0.25)
 
     if not findings:
-        fb = {"id": str(uuid.uuid4()), "agent": agent,
-              "title": "[HIPAA] PHI Exposed in Application Logs — §164.312(b)",
-              "description": "Patient SSN, date of birth, and diagnosis appear in INFO logs. HIPAA §164.312(b) requires audit controls that prevent PHI from being written to unsecured log systems.",
-              "severity": "critical", "cwe_id": None,
-              "location": "auth/login.py", "line_number": 7,
-              "remediation_hint": "Implement structured logging that auto-redacts PHI. Log only patient_id for correlation. Use separate encrypted audit trail for PHI access.",
-              "compliance_refs": ["HIPAA-164.312(b)","SOC2-CC6.7"]}
-        findings.append(fb)
-        await add_finding(scan_id, fb)
-        await trace(scan_id, agent, "🚫 HIPAA §164.312(b) — PHI in logs")
+        await trace(scan_id, agent, "ℹ️ No compliance violations found by LLM — 0 findings this agent")
 
     await trace(scan_id, agent, f"✅ Complete — {len(findings)} compliance violations")
     await set_status(scan_id, agent, "complete")
@@ -595,16 +592,7 @@ Report each design flaw."""
         await asyncio.sleep(0.25)
 
     if not findings:
-        fb = {"id": str(uuid.uuid4()), "agent": agent,
-              "title": "Missing Authentication on Patient Data Access",
-              "description": "get_patient() accepts any patient_id with no auth check. Any caller can access any patient's full medical record.",
-              "severity": "critical", "cwe_id": None, "location": "auth/login.py",
-              "line_number": None,
-              "remediation_hint": "Add @require_auth decorator. Implement RBAC: only treating physicians can access patient records. Add audit logging for all PHI access.",
-              "compliance_refs": ["HIPAA-164.312(a)(1)","SOC2-CC6.3"]}
-        findings.append(fb)
-        await add_finding(scan_id, fb)
-        await trace(scan_id, agent, "🏗️ [CRITICAL] Missing auth on patient data endpoints")
+        await trace(scan_id, agent, "ℹ️ No architectural flaws found by LLM — 0 findings this agent")
 
     await trace(scan_id, agent, f"✅ Complete — {len(findings)} design issues")
     await set_status(scan_id, agent, "complete")
@@ -667,26 +655,7 @@ Elevation of Privilege (access escalation). Report each."""
         await asyncio.sleep(0.25)
 
     if not findings:
-        fallbacks = [
-            {"cat":"Spoofing","title":"JWT Algorithm Confusion — Forge Any Token",
-             "desc":"algorithms=['none'] accepts unsigned tokens. Attacker crafts admin JWT: jwt.encode({'role':'admin'}, '', 'none').",
-             "rem":"Fix: algorithms=['RS256'] only. Remove 'none'. Enable verify_signature."},
-            {"cat":"Information Disclosure","title":"PHI Leak via Debug Logging",
-             "desc":"Patient SSN/DOB/Diagnosis flow from DB into INFO logs. Any log-read access = full PHI access.",
-             "rem":"Remove all PHI from logs. Implement field-level redaction in logging middleware."},
-        ]
-        for fb in fallbacks:
-            f = {"id": str(uuid.uuid4()), "agent": agent,
-                 "title": f"[{fb['cat']}] {fb['title']}", "description": fb["desc"],
-                 "severity": "critical", "cwe_id": STRIDE_CWE.get(fb["cat"]),
-                 "location": "auth/login.py", "line_number": None,
-                 "remediation_hint": fb["rem"], "compliance_refs": []}
-            if f.get("cwe_id") in BREACH_ORACLE:
-                f["breach_citation"] = BREACH_ORACLE[f["cwe_id"]]
-            findings.append(f)
-            await add_finding(scan_id, f)
-            await trace(scan_id, agent, f"🎯 [{fb['cat']}] {fb['title']}")
-            await asyncio.sleep(0.4)
+        await trace(scan_id, agent, "ℹ️ No STRIDE threats found by LLM — 0 findings this agent")
 
     await trace(scan_id, agent, f"✅ Complete — {len(findings)} threats identified")
     await set_status(scan_id, agent, "complete")
@@ -695,59 +664,81 @@ Elevation of Privilege (access escalation). Report each."""
 # ══════════════════════════════════════════════════════════════════════════════
 # AGENT 5 — REMEDY BOT
 # ══════════════════════════════════════════════════════════════════════════════
-async def remedy_bot(scan_id: str, all_findings: list[dict]) -> str:
+async def remedy_bot(scan_id: str, all_findings: list[dict]) -> dict:
+    """
+    Generate a remediation patch via LLM and optionally create a GitHub Gist.
+    Returns {"patch_text": str|None, "pr_url": str|None}.
+    """
     agent = "remedy_bot"
     await set_status(scan_id, agent, "running")
     critical = [f for f in all_findings if f["severity"] in ("critical","high")]
     await trace(scan_id, agent, f"🔧 RemedyBot processing {len(all_findings)} findings ({len(critical)} critical/high)...")
     await asyncio.sleep(0.5)
 
-    fixes_text = ""
+    patch_text = ""
     if (groq_client or gemini_model) and critical:
         summary = "\n".join(f"- [{f['severity']}] {f['title']}: {f['remediation_hint']}" for f in critical[:6])
-        prompt = f"""Generate short, specific code fixes for these security findings.
-For each: one line 'Fix N: [what to change]'.
+        prompt = f"""Generate a unified diff or a clean code snippet fixing these security findings.
+The patch should be clean and directly applicable.
 
 Findings:
 {summary}
 
-Be concrete and brief."""
+Return only the code patch or unified diff in markdown format."""
         try:
             if groq_client:
                 resp = await groq_client.chat.completions.create(
-                    model="llama-3.1-8b-instant",  # Faster model for text output
+                    model="llama-3.3-70b-versatile",
                     messages=[{"role":"user","content":prompt}],
-                    max_tokens=500,
+                    max_tokens=1024,
                 )
-                fixes_text = resp.choices[0].message.content
+                patch_text = resp.choices[0].message.content or ""
             elif gemini_model:
                 resp = await asyncio.to_thread(gemini_model.generate_content, prompt)
-                fixes_text = resp.text
-        except Exception:
-            pass
+                patch_text = resp.text or ""
+        except Exception as e:
+            print(f"[ARGUS] remedy_bot LLM patch generation failed: {e}")
 
-    fix_lines = [l for l in (fixes_text or "").split("\n") if l.strip()]
-    if not fix_lines:
-        fix_lines = [
-            "Fix 1: Replace AWS_SECRET_KEY='...' → boto3 Secrets Manager call",
-            "Fix 2: Replace sql='...'+name → cursor.execute('...%s',(name,))",
-            "Fix 3: Remove PHI from logging.info() → log patient_id only",
-            "Fix 4: Change hashlib.md5() → hashlib.sha256() with salt",
-            "Fix 5: Remove 'none' from JWT algorithms list; set verify_signature=True",
-        ]
+    if patch_text:
+        await trace(scan_id, agent, f"📋 Patch generated ({len(patch_text)} chars)")
+    else:
+        await trace(scan_id, agent, "⚠️ LLM did not produce a patch — no remediation text available")
 
-    for line in fix_lines[:5]:
-        if line.strip():
-            await trace(scan_id, agent, f"📋 {line.strip()[:110]}")
-            await asyncio.sleep(0.35)
+    pr_url = None
+    github_token = os.getenv("GITHUB_TOKEN")
+    if github_token and not DEMO_MODE and patch_text:
+        try:
+            await trace(scan_id, agent, "🚀 Creating secure GitHub Gist with remediation patch...")
+            async with httpx.AsyncClient() as client:
+                headers = {
+                    "Authorization": f"token {github_token}",
+                    "Accept": "application/vnd.github.v3+json",
+                }
+                gist_payload = {
+                    "description": "ARGUS Security Remediation Patch",
+                    "public": False,
+                    "files": {
+                        "remediation_patch.md": {
+                            "content": patch_text
+                        }
+                    }
+                }
+                resp = await client.post("https://api.github.com/gists", json=gist_payload, headers=headers)
+                resp.raise_for_status()
+                pr_url = resp.json().get("html_url")
+                await trace(scan_id, agent, f"✅ Gist created → {pr_url}")
+        except Exception as e:
+            print(f"[ARGUS] GitHub Gist creation failed: {e}")
+            await trace(scan_id, agent, f"⚠️ Gist creation failed ({str(e)[:40]})")
+    else:
+        if not github_token:
+            await trace(scan_id, agent, "ℹ️ No GITHUB_TOKEN — skipping Gist creation")
+        elif DEMO_MODE:
+            await trace(scan_id, agent, "ℹ️ Demo mode — skipping Gist creation")
 
-    await asyncio.sleep(0.8)
-    await trace(scan_id, agent, "🚀 Generating remediation PR on GitHub...")
-    await asyncio.sleep(1.2)
-    pr_url = "https://github.com/demo/vulnerable-app/pull/43"
-    await trace(scan_id, agent, f"✅ Fix PR created → {pr_url}")
+    await trace(scan_id, agent, "✅ RemedyBot complete")
     await set_status(scan_id, agent, "complete")
-    return pr_url
+    return {"patch_text": patch_text or None, "pr_url": pr_url}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # AGENT 6 — RED TEAM OMEGA (The unique feature no other team has)
@@ -797,15 +788,7 @@ Return ONLY a JSON array of strings: ["Step 1 text", "Step 2 text", ...]"""
             pass
 
     if not steps:
-        steps = [
-            "Use hardcoded AWS_SECRET_KEY from source code to gain cloud CLI access",
-            "AWS CLI enumerates S3 → finds 'patient-records-prod' bucket (2.3M records)",
-            "SQL injection in search_users() dumps full credentials and session tokens table",
-            "JWT none-algorithm bypass forges admin session token — no valid signature needed",
-            "Admin token + unauth get_patient() → iterate all patient IDs, exfiltrate PHI",
-            "MD5 password hashes cracked offline in minutes — lateral movement to other systems",
-            "Zero audit logging configured — breach undetected for months, forensics impossible",
-        ]
+        await trace(scan_id, agent, "⚠️ LLM did not produce a kill chain — 0 steps")
 
     for step in steps:
         await trace(scan_id, agent, f"⚔️  {step}")
@@ -821,16 +804,15 @@ Return ONLY a JSON array of strings: ["Step 1 text", "Step 2 text", ...]"""
 AGENT_TIMEOUT_SECS = 90
 
 
-async def _run_with_timeout(coro, *, agent_name: str) -> list:
+async def _run_with_timeout(coro, *, agent_name: str):
     try:
-        result = await asyncio.wait_for(coro, timeout=AGENT_TIMEOUT_SECS)
-        return result if isinstance(result, list) else []
+        return await asyncio.wait_for(coro, timeout=AGENT_TIMEOUT_SECS)
     except asyncio.TimeoutError:
         print(f"[ARGUS] Agent {agent_name!r} timed out after {AGENT_TIMEOUT_SECS}s")
-        return []
+        return None
     except Exception as exc:
         print(f"[ARGUS] Agent {agent_name!r} error: {exc!r}")
-        return []
+        return None
 
 
 async def run_full_scan(scan_id: str, diff: str):
@@ -839,7 +821,7 @@ async def run_full_scan(scan_id: str, diff: str):
 
     try:
         await trace(scan_id, "orchestrator",
-                    "🚀 ARGUS scan initiated — 4 agents dispatching in parallel...")
+                    "🚀 ARGUS scan initiated — 6 agents dispatching in parallel...")
         await asyncio.sleep(0.2)
 
         results = await asyncio.gather(
@@ -859,6 +841,10 @@ async def run_full_scan(scan_id: str, diff: str):
                 failed_agents.append(agent_names[i])
                 await trace(scan_id, "orchestrator",
                             f"⚠️  {agent_names[i]} failed — partial results available")
+            elif r is None:
+                failed_agents.append(agent_names[i])
+                await trace(scan_id, "orchestrator",
+                            f"⚠️  {agent_names[i]} timed out — partial results available")
             elif isinstance(r, list):
                 all_findings.extend(r)
 
@@ -869,17 +855,21 @@ async def run_full_scan(scan_id: str, diff: str):
         await trace(scan_id, "orchestrator",
                     f"📊 Analysis complete — {len(all_findings)} findings aggregated")
 
-        pr_url       = await _run_with_timeout(
-            remedy_bot(scan_id, all_findings), agent_name="remedy_bot"
-        ) or "https://github.com/demo/vulnerable-app/pull/43"
+        # Run remedy_bot and red_team_omega in parallel (with timeout guards)
+        results2 = await asyncio.gather(
+            _run_with_timeout(remedy_bot(scan_id, all_findings), agent_name="remedy_bot"),
+            _run_with_timeout(red_team_omega(scan_id, all_findings), agent_name="red_team_omega"),
+            return_exceptions=True,
+        )
+        remedy_result, attack_chain = results2[0], results2[1]
 
-        attack_chain = await _run_with_timeout(
-            red_team_omega(scan_id, all_findings), agent_name="red_team_omega"
-        ) or []
+        patch_text, pr_url = None, None
+        if isinstance(remedy_result, dict):
+            patch_text = remedy_result.get("patch_text")
+            pr_url = remedy_result.get("pr_url")
+        elif isinstance(remedy_result, str):
+            patch_text = remedy_result  # defensive: handles the pre-patch shape too
 
-        # Fix: remedy_bot and red_team_omega return non-list — unwrap
-        if isinstance(pr_url, list):
-            pr_url = pr_url[0] if pr_url else "https://github.com/demo/vulnerable-app/pull/43"
         if not isinstance(attack_chain, list):
             attack_chain = []
 
@@ -893,6 +883,7 @@ async def run_full_scan(scan_id: str, diff: str):
             "type": "scan_complete",
             "risk_score": risk,
             "remediation_pr_url": pr_url,
+            "patch_preview": patch_text,
             "total_findings": len(all_findings),
             "severity_breakdown": sev_counts,
             "attack_chain": attack_chain,
@@ -951,10 +942,7 @@ async def approve_remediation(scan_id: str, payload: Optional[ApproveRequest] = 
 
 @app.get("/")
 async def root():
-    p = Path("static/index.html")
-    if not p.exists():
-        return HTMLResponse("<h1>ARGUS API is running</h1><p>Place index.html in static/ folder</p>")
-    return HTMLResponse(p.read_text(encoding="utf-8"))
+    return {"status": "ARGUS API is running", "version": "1.0.0"}
 
 _SCAN_TTL_SECS = 3_600   # Evict scans older than 1 hour
 
@@ -979,7 +967,16 @@ def _evict_old_scans() -> None:
 
 @app.post("/api/demo")
 async def start_demo(background_tasks: BackgroundTasks, payload: Optional[DemoScanRequest] = None):
-    _evict_old_scans()                             # ← ADD THIS LINE
+    global _active_scan_count, _last_scan_started_at
+    _evict_old_scans()
+
+    now = time.time()
+    if now - _last_scan_started_at < _SCAN_COOLDOWN_SECS:
+        raise HTTPException(status_code=429, detail="Please wait a few seconds between scans")
+    if _active_scan_count >= _MAX_CONCURRENT_SCANS:
+        raise HTTPException(status_code=429, detail="Too many scans running — try again shortly")
+    _last_scan_started_at = now
+
     scan_id = str(uuid.uuid4())
     repo = payload.repo_full_name if payload and payload.repo_full_name else "demo/vulnerable-app"
     pr_num = payload.pr_number if payload and payload.pr_number is not None else 42
@@ -992,7 +989,16 @@ async def start_demo(background_tasks: BackgroundTasks, payload: Optional[DemoSc
         "done": False,
         "created_at": datetime.utcnow().isoformat(),
     }
-    background_tasks.add_task(run_full_scan, scan_id, DEMO_DIFF)
+
+    async def _tracked_run(sid: str, d: str):
+        global _active_scan_count
+        _active_scan_count += 1
+        try:
+            await run_full_scan(sid, d)
+        finally:
+            _active_scan_count -= 1
+
+    background_tasks.add_task(_tracked_run, scan_id, DEMO_DIFF)
     return {"scan_id": scan_id}
 
 @app.post("/api/scans/demo")
