@@ -17,4 +17,4 @@ See the table in the README. `stream_events()` detects client disconnects via `r
 
 - **In-memory `SCANS` dict, not the Postgres schema, drives the live demo path.** `schema.sql` defines persistent tables (`scan_jobs`, `findings`, `agent_traces`, `compliance_rules`, `attack_chains`) for a future durable-history feature — see Roadmap.
 - **Per-agent timeouts over one global pipeline timeout.** A global timeout would either cut off agents that are almost done or wait unnecessarily on a single hung one; per-agent timeouts let fast agents finish immediately while slow ones fail in isolation.
-- **`orchestrator.py` is not currently imported by `main_api.py`.** It scaffolds a Redis Pub/Sub-based distributed version of the same pipeline — the reference implementation for the Roadmap's "Next" milestone.
+- **`roadmap/orchestrator.py` is not currently imported by `main_api.py`.** It scaffolds a Redis Pub/Sub-based distributed version of the same pipeline — the reference implementation for the Roadmap's "Next" milestone.
