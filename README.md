@@ -6,7 +6,7 @@
   <p>
     <b>ARGUS</b> is an intelligent swarm of security agents that analyzes code, discovers vulnerabilities, maps business risk, and automatically writes remediation patches—before exploits hit production.
 
-    Demo video : https://www.youtube.com/watch?v=3Yq6s_Rh3ys
+    
   </p>
 
   <div>
@@ -26,6 +26,8 @@
 Modern software moves too fast for traditional Static Application Security Testing (SAST). Legacy tools generate overwhelming false positives and lack the context required to actually fix the flaws they find. **ARGUS replaces the legacy scanner.**
 
 By orchestrating **a swarm of 6 specialized AI agents**, ARGUS provides a live, real-time security team. It doesn't just scan; it investigates, exploits, models threats, and writes the patch.
+
+Demo video : https://www.youtube.com/watch?v=3Yq6s_Rh3ys
 
 ---
 
