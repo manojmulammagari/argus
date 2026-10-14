@@ -40,3 +40,27 @@ def test_frozen_api_contract():
 
     # Approval endpoint — used by the remediation flow
     assert "/api/scans/{scan_id}/approve" in paths
+    assert "/health" in paths
+
+
+def test_normalize_severity():
+    from main_api import normalize_severity
+    assert normalize_severity("CRITICAL") == "critical"
+    assert normalize_severity("High") == "high"
+    assert normalize_severity("MEDIUM") == "medium"
+    assert normalize_severity("low") == "low"
+    assert normalize_severity("unknown") == "medium"
+    assert normalize_severity(None) == "medium"
+    assert normalize_severity(123) == "medium"
+
+
+def test_health_endpoint():
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert "groq" in data
+    assert "gemini" in data
+
