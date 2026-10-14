@@ -17,12 +17,24 @@ const AGENTS = [
   { name: "Red Team Ω", icon: Target, color: "text-red-400 bg-red-500/10 border-red-500/20", desc: "Adversarial kill-chain simulation and impact path" },
 ]
 
+interface RecentScan {
+  id: string
+  repo_full_name: string
+  pr_number: number
+  status: string
+  risk_score?: number
+  total_findings: number
+  remediation_pr_url?: string | null
+  created_at?: string
+}
+
 export default function Home() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [repoInput, setRepoInput] = useState("demo/vulnerable-app")
   const [prNumber, setPrNumber] = useState(42)
-  const [recentScans, setRecentScans] = useState<any[]>([])
+  const [recentScans, setRecentScans] = useState<RecentScan[]>([])
 
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
@@ -35,6 +47,7 @@ export default function Home() {
 
   const triggerScan = async () => {
     setLoading(true)
+    setErrorMessage(null)
     try {
       const res = await fetch(`${apiBase}/api/demo`, {
         method: "POST",
@@ -45,12 +58,26 @@ export default function Home() {
           frameworks: ["SOC2", "HIPAA", "PCI-DSS"]
         })
       })
+      if (!res.ok) {
+        let detail = `Scan request failed (${res.status})`
+        try {
+          const errData = await res.json()
+          if (errData?.detail) detail = errData.detail
+        } catch {}
+        setErrorMessage(detail)
+        setLoading(false)
+        return
+      }
       const data = await res.json()
       if (data?.scan_id) {
         router.push(`/scan/${data.scan_id}`)
+      } else {
+        setErrorMessage("Server responded without a valid scan ID")
+        setLoading(false)
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e)
+      setErrorMessage(e?.message || "Failed to connect to backend server")
       setLoading(false)
     }
   }
@@ -75,7 +102,7 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-4">
             <a
-              href="http://localhost:8000"
+              href={apiBase}
               target="_blank"
               rel="noreferrer"
               className="text-xs text-slate-400 hover:text-white transition flex items-center gap-1.5"
@@ -138,6 +165,14 @@ export default function Home() {
           </button>
         </div>
 
+        {/* Error Feedback */}
+        {errorMessage && (
+          <div className="w-full max-w-2xl mt-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+            <span>{errorMessage}</span>
+          </div>
+        )}
+
         {/* 6 AI Agents Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-20 w-full text-left">
           {AGENTS.map((agent) => {
@@ -171,7 +206,7 @@ export default function Home() {
                   className="bg-[#0a1120] border border-slate-800/80 hover:border-slate-700 p-3 rounded-xl flex items-center justify-between cursor-pointer transition"
                 >
                   <div className="flex items-center gap-3">
-                    <span className="text-xs font-mono text-purple-400">{s.repo}</span>
+                    <span className="text-xs font-mono text-purple-400">{s.repo_full_name}</span>
                     <span className="text-xs text-slate-600">PR #{s.pr_number}</span>
                   </div>
                   <div className="flex items-center gap-4">
