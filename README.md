@@ -72,7 +72,7 @@ Experience ARGUS locally in under two minutes.
 ARGUS uses **Groq** for high-speed inference and **Google Gemini** as a structural fallback.
 ```bash
 # Clone the repository (if not already local)
-git clone https://github.com/your-org/argus.git
+git clone https://github.com/manojmulammagari/argus.git
 cd argus
 
 # Duplicate the example environment file
