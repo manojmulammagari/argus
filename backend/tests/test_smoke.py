@@ -106,3 +106,17 @@ def test_demo_scan_created_at_is_utc():
         f"created_at is not UTC-aware: {created!r}"
     )
     SCANS.pop(scan_id, None)   # clean up
+
+
+def test_google_genai_sdk_migration():
+    """
+    Regression for F-001: Ensure deprecated google.generativeai package is NOT imported.
+    google.genai should be used instead.
+    """
+    import sys
+    assert "google.generativeai" not in sys.modules, (
+        "Deprecated google.generativeai package is loaded! Must use google.genai."
+    )
+    import main_api
+    assert hasattr(main_api, "gemini_client")
+

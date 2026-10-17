@@ -3,7 +3,7 @@ ARGUS — Complete Backend (100% FREE APIs — Groq + Gemini)
 No Anthropic key needed. Groq is free and streams at 300+ tokens/sec.
 
 Run:
-  pip install fastapi uvicorn groq google-generativeai python-dotenv
+  pip install fastapi uvicorn groq google-genai python-dotenv
   uvicorn main_api:app --reload --port 8000
 
 Get free keys:
@@ -89,12 +89,12 @@ if GEMINI_KEY:
             return _orig_getaddrinfo(host, port, _socket.AF_INET, *args, **kwargs)
         _socket.getaddrinfo = _ipv4_getaddrinfo
 
-        import google.generativeai as genai
-        genai.configure(api_key=GEMINI_KEY)
-        gemini_model = genai.GenerativeModel(GEMINI_MODEL)
-        print("✅ Gemini API ready (free backup, IPv4-only on Windows)")
+        import google.genai as _genai
+        gemini_client = _genai.Client(api_key=GEMINI_KEY)
+        gemini_model  = gemini_client   # kept for boolean checks throughout the module
+        print("\u2705 Gemini API ready (google-genai SDK, free backup, IPv4-only on Windows)")
     except ImportError:
-        print("⚠️  google-generativeai not installed — run: pip install google-generativeai")
+        print("\u26a0\ufe0f  google-genai not installed \u2014 run: pip install google-genai")
 
 if not groq_client and not gemini_model:
     print("⚠️  No API keys set — using built-in demo data (still works great!)")
@@ -384,7 +384,11 @@ Return ONLY the JSON array, no other text."""
             for _attempt in range(3):
                 try:
                     resp = await asyncio.wait_for(
-                        asyncio.to_thread(gemini_model.generate_content, json_prompt),
+                        asyncio.to_thread(
+                            gemini_client.models.generate_content,
+                            model=GEMINI_MODEL,
+                            contents=json_prompt,
+                        ),
                         timeout=25.0,
                     )
                     break
@@ -738,7 +742,11 @@ Return only the code patch or unified diff in markdown format."""
                 )
                 patch_text = resp.choices[0].message.content or ""
             elif gemini_model:
-                resp = await asyncio.to_thread(gemini_model.generate_content, prompt)
+                resp = await asyncio.to_thread(
+                    gemini_client.models.generate_content,
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                )
                 patch_text = resp.text or ""
         except Exception as e:
             print(f"[ARGUS] remedy_bot LLM patch generation failed: {e}")
@@ -828,7 +836,11 @@ Return ONLY a valid JSON array of strings: ["Step 1 text", "Step 2 text", ...]""
 
         if not steps and gemini_model:
             try:
-                resp = await asyncio.to_thread(gemini_model.generate_content, prompt)
+                resp = await asyncio.to_thread(
+                    gemini_client.models.generate_content,
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                )
                 text = resp.text.strip()
                 if "```" in text:
                     text = text.split("```")[1].replace("json","").strip()
