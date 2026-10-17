@@ -15,7 +15,7 @@ import time
 import asyncio, json, uuid, os, re, sys
 import httpx
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 try:
     from dotenv import load_dotenv
@@ -287,7 +287,7 @@ def normalize_severity(raw: Any) -> str:
 
 # ── Event helpers ────────────────────────────────────────────────────────────
 async def emit(scan_id, event):
-    event["ts"] = datetime.utcnow().isoformat()
+    event["ts"] = datetime.now(timezone.utc).isoformat()
     SCANS[scan_id]["events"].append(event)
     if event.get("type") == "scan_complete":
         SCANS[scan_id]["done"] = True
@@ -1013,12 +1013,16 @@ def _evict_old_scans() -> None:
     Prevent unbounded memory growth in the SCANS in-memory dict.
     Called at the start of every new scan request.
     O(n) but n is bounded by TTL; production would use Redis with EXPIRE.
+
+    Uses epoch-float `created_at_ts` so eviction is timezone-independent.
+    (Previously used datetime.utcnow().isoformat() which, when read back via
+    fromisoformat().timestamp(), was interpreted as local time — at UTC+5:30
+    a 0-second-old scan appeared 5.5h old and was evicted immediately.)
     """
     cutoff = time.time() - _SCAN_TTL_SECS
     stale  = [
         sid for sid, sdata in SCANS.items()
-        if datetime.fromisoformat(sdata.get("created_at", "2000-01-01T00:00:00"))
-                   .timestamp() < cutoff
+        if sdata.get("created_at_ts", 0) < cutoff
     ]
     for sid in stale:
         SCANS.pop(sid, None)
@@ -1041,6 +1045,7 @@ async def start_demo(background_tasks: BackgroundTasks, payload: Optional[DemoSc
     scan_id = str(uuid.uuid4())
     repo = payload.repo_full_name if payload and payload.repo_full_name else "demo/vulnerable-app"
     pr_num = payload.pr_number if payload and payload.pr_number is not None else 42
+    _now_ts = time.time()
     SCANS[scan_id] = {
         "id": scan_id,
         "repo_full_name": repo,
@@ -1048,7 +1053,8 @@ async def start_demo(background_tasks: BackgroundTasks, payload: Optional[DemoSc
         "events": [],
         "findings": [],
         "done": False,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.fromtimestamp(_now_ts, tz=timezone.utc).isoformat(),
+        "created_at_ts": _now_ts,
     }
 
     async def _tracked_run(sid: str, d: str):
@@ -1078,7 +1084,7 @@ async def list_scans(limit: int = 10):
             "risk_score": sdata.get("risk_score", 0),
             "total_findings": len(sdata.get("findings", [])),
             "remediation_pr_url": sdata.get("remediation_pr_url"),
-            "created_at": sdata.get("created_at", datetime.utcnow().isoformat()),
+            "created_at": sdata.get("created_at", datetime.now(timezone.utc).isoformat()),
         })
     return recent
 
@@ -1097,7 +1103,7 @@ async def get_scan(scan_id: str):
         "findings": sdata.get("findings", []),
         "remediation_pr_url": sdata.get("remediation_pr_url"),
         "attack_chain": sdata.get("attack_chain", []),
-        "created_at": sdata.get("created_at", datetime.utcnow().isoformat()),
+        "created_at": sdata.get("created_at", datetime.now(timezone.utc).isoformat()),
     }
 
 @app.get("/api/stream/{scan_id}")

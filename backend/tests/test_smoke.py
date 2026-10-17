@@ -64,3 +64,45 @@ def test_health_endpoint():
     assert "groq" in data
     assert "gemini" in data
 
+
+def test_eviction_is_timezone_safe():
+    """
+    Regression for F-002: A freshly created scan must NOT be evicted.
+    Previously, datetime.utcnow().isoformat() was stored and later parsed
+    via fromisoformat().timestamp(), which interprets naive datetimes as
+    LOCAL time.  At UTC+5:30, a scan created at 09:00 UTC looked like it was
+    created at 03:30 UTC (5.5 h in the past) and was immediately evicted.
+    Fix: store a UTC epoch float (created_at_ts) and compare directly.
+    """
+    import time
+    from main_api import SCANS, _evict_old_scans
+
+    test_id = "eviction-regression-test"
+    SCANS[test_id] = {
+        "id": test_id,
+        "events": [],
+        "findings": [],
+        "done": False,
+        "created_at_ts": time.time(),           # created NOW
+    }
+    _evict_old_scans()
+    assert test_id in SCANS, (
+        "Fresh scan was evicted immediately — timezone eviction bug is back!"
+    )
+    SCANS.pop(test_id, None)   # clean up
+
+
+def test_demo_scan_created_at_is_utc():
+    """created_at in SCANS must be a timezone-aware ISO-8601 string (ends with +00:00)."""
+    from fastapi.testclient import TestClient
+    from main_api import SCANS
+
+    client = TestClient(app)
+    resp = client.post("/api/demo")
+    assert resp.status_code == 200
+    scan_id = resp.json()["scan_id"]
+    created = SCANS[scan_id]["created_at"]
+    assert "+00:00" in created or created.endswith("Z"), (
+        f"created_at is not UTC-aware: {created!r}"
+    )
+    SCANS.pop(scan_id, None)   # clean up
