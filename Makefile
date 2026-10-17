@@ -1,4 +1,6 @@
-.PHONY: install run-backend run-frontend run-all test build clean infra
+.PHONY: install run run-backend run-frontend run-all test build clean infra
+
+run: run-all
 
 install:
 	cd backend && pip install -r requirements-dev.txt
