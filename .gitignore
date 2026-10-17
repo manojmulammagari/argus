@@ -6,6 +6,9 @@ __pycache__/
 dist/
 build/
 
+# Audit (local only)
+.audit/
+
 # Environments
 .env
 .env.local
