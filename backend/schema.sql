@@ -92,6 +92,8 @@ RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_scanjobs_updated ON scan_jobs;
 CREATE TRIGGER trg_scanjobs_updated
     BEFORE UPDATE ON scan_jobs
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
