@@ -211,6 +211,56 @@ def sanitize_diff(raw_diff: str) -> str:
         "</untrusted_diff>"
     )
 
+
+def extract_diff_files(diff_text: str) -> list[str]:
+    """
+    Extract file paths modified in a git diff.
+    Supports standard git diff headers and unified diff +++ headers.
+    """
+    files = re.findall(r"^diff --git a/(.*?) b/", diff_text, re.MULTILINE)
+    if not files:
+        files = re.findall(r"^\+\+\+ b/(.*)", diff_text, re.MULTILINE)
+    cleaned = []
+    for f in files:
+        f = f.strip()
+        if f and f != "/dev/null" and f not in cleaned:
+            cleaned.append(f)
+    return cleaned
+
+
+async def fetch_github_pr_diff(repo: str, pr_number: int) -> tuple[Optional[str], Optional[str], int]:
+    """
+    Fetch the raw git diff for a GitHub PR via the GitHub REST API.
+    Returns (diff_text, error_message, status_code).
+    """
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    headers = {
+        "Accept": "application/vnd.github.v3.diff",
+        "User-Agent": "ARGUS-Scanner",
+    }
+    github_token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if github_token:
+        headers["Authorization"] = f"Bearer {github_token}"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                return resp.text, None, 200
+            elif resp.status_code == 404:
+                return None, f"GitHub PR not found (404): {repo} #{pr_number}. Please verify repository name and PR number.", 404
+            elif resp.status_code == 401:
+                return None, f"GitHub authentication error (401): Invalid or expired GITHUB_TOKEN.", 401
+            elif resp.status_code == 403:
+                return None, f"GitHub API rate limit or permission denied (403): {repo} #{pr_number}.", 403
+            else:
+                return None, f"GitHub API returned HTTP {resp.status_code} for {repo} #{pr_number}.", resp.status_code
+    except httpx.TimeoutException:
+        return None, f"Timed out connecting to GitHub API for {repo} #{pr_number}.", 504
+    except Exception as exc:
+        return None, f"Network error connecting to GitHub: {exc}", 500
+
+
 COMPLIANCE_RULES = {
     "HIPAA": ["164.312(b) — PHI must never appear in logs",
               "164.312(d) — Verify identity before granting PHI access",
@@ -354,7 +404,20 @@ async def llm_tool_call(scan_id: str, agent: str, prompt: str,
                                 continue
 
             if not has_tool_call_structure:
-                # Groq returned 200 but with no tool_calls field — a hallucination.
+                # If Groq replied with text indicating no findings / clean diff, return []
+                content_lower = ""
+                for choice in resp.choices:
+                    if choice.message and choice.message.content:
+                        content_lower += " " + choice.message.content.lower()
+                clean_keywords = [
+                    "no vuln", "no issue", "no security", "no flaw", "clean",
+                    "no violation", "no threat", "false positive", "none found",
+                    "no confirmed", "not find any", "doesn't contain any",
+                    "does not contain any", "no bugs", "looks secure", "no risk"
+                ]
+                if any(k in content_lower for k in clean_keywords):
+                    await trace(scan_id, agent, "ℹ️ LLM verified: No vulnerabilities or compliance issues found")
+                    return []
                 # Fall through to Gemini rather than treating as success.
                 raise ValueError("Groq response missing expected tool-call structure")
 
@@ -374,11 +437,12 @@ async def llm_tool_call(scan_id: str, agent: str, prompt: str,
             # so we ask it to return JSON directly
             json_prompt = f"""{prompt}
 
-IMPORTANT: Respond ONLY with a JSON array of objects. Each object must match this schema:
+IMPORTANT: Respond ONLY with a valid JSON array of objects. Each object must match this schema:
 {json.dumps(tool_schema, indent=2)}
 
+If no vulnerabilities or issues are found in the diff, return an empty array: []
 Example: [{{"title": "...", "severity": "critical", ...}}]
-Return ONLY the JSON array, no other text."""
+Return ONLY the JSON array (or []), no other text."""
 
             # Retry up to 2 times to handle transient Windows TCP resets (wsarecv abort)
             for _attempt in range(3):
@@ -404,7 +468,7 @@ Return ONLY the JSON array, no other text."""
             if isinstance(parsed, list):
                 results = parsed
             elif isinstance(parsed, dict):
-                results = [parsed]
+                results = [parsed] if parsed else []
             return results
         except Exception as e:
             print(f"[ARGUS] {agent}: Gemini fallback also failed ({str(e)[:80]})")
@@ -437,6 +501,9 @@ async def ast_sentinel(scan_id: str, safe_diff: str) -> list[dict]:
         await trace(scan_id, agent, f"🧠 {len(hits)} candidates → Groq semantic validation (free)...")
         await asyncio.sleep(0.3)
 
+        diff_files = extract_diff_files(safe_diff)
+        default_file = diff_files[0] if diff_files else "PR Diff"
+
         tool_schema = {
             "type": "object",
             "properties": {
@@ -454,12 +521,15 @@ async def ast_sentinel(scan_id: str, safe_diff: str) -> list[dict]:
         prompt = f"""You are an expert security engineer doing static code analysis.
 
 Validate these regex hits and report CONFIRMED vulnerabilities. Discard false positives.
+If no confirmed vulnerabilities exist in the code, do not report any findings.
 
 Regex hits:
 {json.dumps(hits[:12], indent=2)}
 
 PR diff:
 {safe_diff[:3500]}
+
+Files changed: {', '.join(diff_files[:10]) if diff_files else 'None'}
 
 For each confirmed vulnerability, report it with exact line number and specific remediation."""
 
@@ -473,7 +543,7 @@ For each confirmed vulnerability, report it with exact line number and specific 
                 "description": inp.get("description",""),
                 "severity": sev,
                 "cwe_id": inp.get("cwe_id"),
-                "location": inp.get("location","auth/login.py"),
+                "location": inp.get("location") or default_file,
                 "line_number": inp.get("line_number"),
                 "remediation_hint": inp.get("remediation_hint","Review and fix"),
                 "compliance_refs": inp.get("compliance_refs",[]),
@@ -508,6 +578,9 @@ async def policy_guard(scan_id: str, safe_diff: str) -> list[dict]:
         await trace(scan_id, agent, "📋 Loading SOC2, HIPAA, PCI-DSS rule sets...")
         await asyncio.sleep(0.5)
 
+        diff_files = extract_diff_files(safe_diff)
+        default_file = diff_files[0] if diff_files else "PR Diff"
+
         rules = "\n".join(f"  {fw}: " + " | ".join(r for r in rs)
                           for fw, rs in COMPLIANCE_RULES.items())
         await trace(scan_id, agent, "🔎 Cross-referencing every added line against compliance articles...")
@@ -530,12 +603,15 @@ async def policy_guard(scan_id: str, safe_diff: str) -> list[dict]:
         prompt = f"""You are a compliance officer for SOC2, HIPAA, PCI-DSS.
 
 Review lines starting with '+' for compliance violations. Reference specific article numbers.
+If there are no compliance violations introduced, do not report any violations.
 
 Rules:
 {rules}
 
 Code changes:
 {safe_diff[:4000]}
+
+Files changed: {', '.join(diff_files[:10]) if diff_files else 'None'}
 
 Report each article-level violation found."""
 
@@ -549,7 +625,7 @@ Report each article-level violation found."""
                  "title": f"[{fw}] {inp.get('title','Violation')}",
                  "description": inp.get("description",""),
                  "severity": sev, "cwe_id": None,
-                 "location": inp.get("location","auth/login.py"),
+                 "location": inp.get("location") or default_file,
                  "line_number": inp.get("line_number"),
                  "remediation_hint": inp.get("remediation_hint",""),
                  "compliance_refs": [f"{fw}-{ref}"]}
@@ -584,8 +660,12 @@ async def arch_auditor(scan_id: str, safe_diff: str) -> list[dict]:
         await trace(scan_id, agent, "📐 Arch Auditor scanning code structure for design flaws...")
         await asyncio.sleep(0.5)
 
-        for f in ["auth/login.py", "api/patients.py"]:
-            await trace(scan_id, agent, f"🔭 Auditing: {f}"); await asyncio.sleep(0.25)
+        diff_files = extract_diff_files(safe_diff)
+        default_component = diff_files[0] if diff_files else "PR Changes"
+        files_to_audit = diff_files[:5] if diff_files else ["PR Changes"]
+        for f in files_to_audit:
+            await trace(scan_id, agent, f"🔭 Auditing: {f}")
+            await asyncio.sleep(0.25)
 
         tool_schema = {
             "type": "object",
@@ -603,9 +683,12 @@ async def arch_auditor(scan_id: str, safe_diff: str) -> list[dict]:
 
 Look for: missing auth checks, insecure CORS (*), no rate limiting, unauthenticated endpoints,
 missing HTTPS, error messages leaking internal details, debug code in production.
+If no architectural flaws exist, do not report any issues.
 
 PR diff:
 {safe_diff[:3500]}
+
+Files changed: {', '.join(diff_files[:10]) if diff_files else 'None'}
 
 Report each design flaw."""
 
@@ -617,7 +700,7 @@ Report each design flaw."""
             f = {"id": str(uuid.uuid4()), "agent": agent,
                  "title": inp.get("title",""), "description": inp.get("description",""),
                  "severity": sev, "cwe_id": None,
-                 "location": inp.get("component","auth/"),
+                 "location": inp.get("component") or default_component,
                  "line_number": None,
                  "remediation_hint": inp.get("remediation_hint",""),
                  "compliance_refs": inp.get("compliance_refs",[])}
@@ -650,6 +733,9 @@ async def threat_mind(scan_id: str, safe_diff: str) -> list[dict]:
         await trace(scan_id, agent, "⚔️ ThreatMind running STRIDE threat model...")
         await asyncio.sleep(0.4)
 
+        diff_files = extract_diff_files(safe_diff)
+        default_component = diff_files[0] if diff_files else "PR Changes"
+
         for cat in STRIDE_CATS:
             await trace(scan_id, agent, f"🎯 Checking: {cat}"); await asyncio.sleep(0.12)
 
@@ -668,9 +754,12 @@ async def threat_mind(scan_id: str, safe_diff: str) -> list[dict]:
         prompt = f"""You are a red team engineer doing STRIDE threat modeling.
 
 Find exploitable threats in these code changes. Only report concrete, realistic threats.
+If no realistic threats are introduced by this PR diff, do not report any threats.
 
 PR diff:
 {safe_diff[:3500]}
+
+Files changed: {', '.join(diff_files[:10]) if diff_files else 'None'}
 
 STRIDE: Spoofing (auth bypass), Tampering (data modification), Repudiation (missing logs),
 Information Disclosure (data leak), Denial of Service (resource exhaustion),
@@ -687,7 +776,7 @@ Elevation of Privilege (access escalation). Report each."""
                  "description": inp.get("description",""),
                  "severity": sev,
                  "cwe_id": STRIDE_CWE.get(cat),
-                 "location": inp.get("affected_component","auth/login.py"),
+                 "location": inp.get("affected_component") or default_component,
                  "line_number": None,
                  "remediation_hint": inp.get("mitigations",""),
                  "compliance_refs": []}
@@ -722,6 +811,11 @@ async def remedy_bot(scan_id: str, all_findings: list[dict]) -> dict:
     critical = [f for f in all_findings if f["severity"] in ("critical","high")]
     await trace(scan_id, agent, f"🔧 RemedyBot processing {len(all_findings)} findings ({len(critical)} critical/high)...")
     await asyncio.sleep(0.5)
+
+    if not critical:
+        await trace(scan_id, agent, "✅ Clean scan — no vulnerabilities requiring remediation")
+        await set_status(scan_id, agent, "complete")
+        return {"patch_text": None, "pr_url": None}
 
     patch_text = ""
     if (groq_client or gemini_model) and critical:
@@ -799,8 +893,11 @@ async def red_team_omega(scan_id: str, all_findings: list[dict]) -> list[str]:
     agent = "red_team"
     await set_status(scan_id, agent, "running")
     await asyncio.sleep(0.3)
-    await trace(scan_id, agent, "🎯 Red Team Omega activating — constructing adversarial kill chain...")
-    await asyncio.sleep(0.6)
+    if not all_findings:
+        await trace(scan_id, agent, "ℹ️ No vulnerabilities detected — kill chain attack path empty")
+        await set_status(scan_id, agent, "complete")
+        return []
+
     await trace(scan_id, agent, f"🔍 Chaining {len(all_findings)} findings into realistic attack path...")
     await asyncio.sleep(0.4)
 
@@ -970,7 +1067,7 @@ async def run_full_scan(scan_id: str, diff: str):
         await emit(scan_id, summary)
         await trace(scan_id, "orchestrator",
                     f"🏁 ARGUS complete — Risk: {risk}/100 | Findings: {len(all_findings)}")
-        if not DEMO_MODE:
+        if not DEMO_MODE and all_findings:
             await emit(scan_id, {"type": "remediation_ready", "awaiting_approval": True})
             await trace(scan_id, "orchestrator", "⏸️ Patch PR ready — awaiting human approval")
 
@@ -984,9 +1081,24 @@ async def run_full_scan(scan_id: str, diff: str):
 # MODELS & ENDPOINTS
 # ══════════════════════════════════════════════════════════════════════════════
 class DemoScanRequest(BaseModel):
-    repo_full_name: Optional[str] = "demo/vulnerable-app"
-    pr_number: Optional[int] = 42
+    repo: Optional[str] = None
+    repo_full_name: Optional[str] = None
+    pr_number: Optional[int] = None
     frameworks: Optional[List[str]] = ["SOC2", "HIPAA", "PCI-DSS"]
+
+    def get_repo(self) -> str:
+        if self.repo and self.repo.strip():
+            return self.repo.strip()
+        if self.repo_full_name and self.repo_full_name.strip():
+            return self.repo_full_name.strip()
+        return "demo/vulnerable-app"
+
+    def get_pr_number(self) -> int:
+        if self.pr_number is not None:
+            return self.pr_number
+        return 42
+
+ScanRequest = DemoScanRequest
 
 class ApproveRequest(BaseModel):
     auto_confirmed: Optional[bool] = False
@@ -1057,8 +1169,8 @@ async def start_demo(background_tasks: BackgroundTasks, payload: Optional[DemoSc
     _active_scan_count += 1
     try:
         scan_id = str(uuid.uuid4())
-        repo = payload.repo_full_name if payload and payload.repo_full_name else "demo/vulnerable-app"
-        pr_num = payload.pr_number if payload and payload.pr_number is not None else 42
+        repo = payload.get_repo() if payload else "demo/vulnerable-app"
+        pr_num = payload.get_pr_number() if payload else 42
         _now_ts = time.time()
         SCANS[scan_id] = {
             "id": scan_id,
@@ -1071,14 +1183,48 @@ async def start_demo(background_tasks: BackgroundTasks, payload: Optional[DemoSc
             "created_at_ts": _now_ts,
         }
 
-        async def _tracked_run(sid: str, d: str):
+        async def _tracked_run(sid: str, target_repo: str, target_pr: int):
             global _active_scan_count
             try:
-                await run_full_scan(sid, d)
+                # If DEMO_MODE is True or target_repo is "demo/vulnerable-app", run synthetic demo
+                if DEMO_MODE or target_repo == "demo/vulnerable-app":
+                    await trace(sid, "orchestrator", f"🧪 Demo mode active — analyzing synthetic vulnerable payload for {target_repo} #{target_pr}...")
+                    diff_to_scan = DEMO_DIFF
+                else:
+                    await trace(sid, "orchestrator", f"🌐 Fetching live diff from GitHub for {target_repo} PR #{target_pr}...")
+                    diff_text, err_msg, status_code = await fetch_github_pr_diff(target_repo, target_pr)
+                    if err_msg or not diff_text:
+                        error_detail = err_msg or "Empty pull request diff returned from GitHub."
+                        await trace(sid, "orchestrator", f"❌ {error_detail}")
+                        if sid in SCANS:
+                            SCANS[sid]["done"] = True
+                            SCANS[sid]["status"] = "error"
+                            SCANS[sid]["error"] = error_detail
+                        await emit(sid, {
+                            "type": "scan_complete",
+                            "risk_score": 0,
+                            "error": error_detail,
+                            "total_findings": 0,
+                            "findings": [],
+                            "severity_breakdown": {},
+                            "attack_chain": []
+                        })
+                        return
+
+                    await trace(sid, "orchestrator", f"✅ Successfully retrieved live diff ({len(diff_text)} bytes) from GitHub")
+                    diff_to_scan = diff_text
+
+                await run_full_scan(sid, diff_to_scan)
+            except Exception as exc:
+                print(f"[ARGUS] Scan {sid} unhandled exception: {exc}")
+                if sid in SCANS:
+                    SCANS[sid]["done"] = True
+                    SCANS[sid]["status"] = "error"
+                await emit(sid, {"type": "scan_complete", "risk_score": 0, "error": str(exc), "total_findings": 0, "findings": []})
             finally:
                 _active_scan_count = max(0, _active_scan_count - 1)
 
-        background_tasks.add_task(_tracked_run, scan_id, DEMO_DIFF)
+        background_tasks.add_task(_tracked_run, scan_id, repo, pr_num)
         return {"scan_id": scan_id}
     except Exception:
         _active_scan_count = max(0, _active_scan_count - 1)
@@ -1086,6 +1232,18 @@ async def start_demo(background_tasks: BackgroundTasks, payload: Optional[DemoSc
 
 @app.post("/api/scans/demo")
 async def start_demo_alias(background_tasks: BackgroundTasks, payload: Optional[DemoScanRequest] = None):
+    return await start_demo(background_tasks, payload)
+
+@app.post("/api/scan")
+async def start_scan_endpoint(background_tasks: BackgroundTasks, payload: Optional[DemoScanRequest] = None):
+    return await start_demo(background_tasks, payload)
+
+@app.post("/api/scan/start")
+async def start_scan_start_endpoint(background_tasks: BackgroundTasks, payload: Optional[DemoScanRequest] = None):
+    return await start_demo(background_tasks, payload)
+
+@app.post("/scan/start")
+async def scan_start_endpoint(background_tasks: BackgroundTasks, payload: Optional[DemoScanRequest] = None):
     return await start_demo(background_tasks, payload)
 
 @app.get("/api/scans")

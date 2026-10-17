@@ -53,6 +53,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          repo: repoInput,
           repo_full_name: repoInput,
           pr_number: Number(prNumber) || 42,
           frameworks: ["SOC2", "HIPAA", "PCI-DSS"]

@@ -145,3 +145,45 @@ def test_admission_control_concurrency_limit():
         main_api._last_scan_started_at = orig_last
 
 
+def test_extract_diff_files():
+    from main_api import extract_diff_files
+    diff = """diff --git a/src/index.ts b/src/index.ts
+index 1234..5678 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,3 +1,3 @@
+-const x = 1;
++const x = 2;
+diff --git a/packages/core/api.py b/packages/core/api.py
+--- a/packages/core/api.py
++++ b/packages/core/api.py
+"""
+    files = extract_diff_files(diff)
+    assert "src/index.ts" in files
+    assert "packages/core/api.py" in files
+    assert len(files) == 2
+
+
+def test_scan_request_payload_aliases():
+    from main_api import ScanRequest
+    req1 = ScanRequest(repo="traceloop/openllmetry", pr_number=4618)
+    assert req1.get_repo() == "traceloop/openllmetry"
+    assert req1.get_pr_number() == 4618
+
+    req2 = ScanRequest(repo_full_name="traceloop/openllmetry", pr_number=4618)
+    assert req2.get_repo() == "traceloop/openllmetry"
+    assert req2.get_pr_number() == 4618
+
+    req3 = ScanRequest()
+    assert req3.get_repo() == "demo/vulnerable-app"
+    assert req3.get_pr_number() == 42
+
+
+def test_new_scan_start_routes():
+    paths = {route.path for route in app.routes}
+    assert "/api/scan" in paths
+    assert "/api/scan/start" in paths
+    assert "/scan/start" in paths
+
+
+

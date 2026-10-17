@@ -229,6 +229,7 @@ export default function ScanPage() {
   const [killChain, setKillChain] = useState<string[]>([])
   const [riskScore, setRiskScore] = useState<number | null>(null)
   const [scanComplete, setScanComplete] = useState(false)
+  const [scanError, setScanError] = useState<string | null>(null)
   const [remediationUrl, setRemediationUrl] = useState<string | null>(null)
   const [patchPreview, setPatchPreview] = useState<string | null>(null)
   const [showPatchModal, setShowPatchModal] = useState(false)
@@ -254,6 +255,7 @@ export default function ScanPage() {
       .then(data => {
         if (!active || !data) return
         setScanMeta(data)
+        if (data.error) setScanError(data.error)
       })
       .catch(() => {})
     return () => { active = false }
@@ -281,6 +283,7 @@ export default function ScanPage() {
           setFindings(prev => [...prev, data.finding as Finding])
         }
         if (data.type === "scan_complete" || data.type === "done") {
+          if (data.error) setScanError(data.error as string)
           if (data.risk_score !== undefined) setRiskScore(data.risk_score as number)
           if (Array.isArray(data.attack_chain)) setKillChain(data.attack_chain as string[])
           if (data.remediation_pr_url) setRemediationUrl(data.remediation_pr_url as string)
@@ -356,7 +359,9 @@ export default function ScanPage() {
           </div>
           <div className="flex items-center gap-3 flex-shrink-0">
             {sseError && !scanComplete && <span className="text-xs text-amber-400 flex items-center gap-1.5"><AlertTriangle className="w-3 h-3" /> Reconnecting...</span>}
-            {!scanComplete ? (
+            {scanError ? (
+              <span className="text-xs text-red-400 flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> Scan Failed</span>
+            ) : !scanComplete ? (
               <span className="text-xs text-amber-400 flex items-center gap-1.5"><Activity className="w-3 h-3 animate-pulse" /> Scanning...</span>
             ) : (
               <span className="text-xs text-emerald-400 flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5" /> Complete</span>
@@ -379,6 +384,15 @@ export default function ScanPage() {
       </header>
 
       <div className="max-w-7xl mx-auto px-5 py-6">
+        {scanError && (
+          <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 flex-shrink-0 text-red-400 mt-0.5" />
+            <div>
+              <div className="font-semibold text-red-300">Scan Notice</div>
+              <div className="text-xs text-red-400/90 mt-1 leading-relaxed">{scanError}</div>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 mb-6">
           <div className="col-span-2 sm:col-span-1 lg:col-span-2 rounded-xl p-4 flex items-center gap-4" style={{ backgroundColor: "#080f1c", border: "1px solid rgba(51,65,85,0.4)" }}>
             <RiskGauge score={riskScore} />

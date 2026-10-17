@@ -29,4 +29,6 @@ Thumbs.db
 node_modules/
 .next/
 *.tsbuildinfo
+frontend/AGENTS.md
+frontend/CLAUDE.md
 
