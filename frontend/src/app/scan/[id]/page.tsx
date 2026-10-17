@@ -228,16 +228,32 @@ export default function ScanPage() {
   const [activeTab, setActiveTab] = useState<"agents" | "findings" | "killchain">("agents")
   const [sseError, setSseError] = useState(false)
   const [retryCount, setRetryCount] = useState(0)
+  const [scanNotFound, setScanNotFound] = useState(false)
 
   const esRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
     if (!scanId) return
-    fetch(`${apiBase}/api/scans/${scanId}`).then(r => r.json()).then(setScanMeta).catch(() => {})
+    let active = true
+    fetch(`${apiBase}/api/scans/${scanId}`)
+      .then(r => {
+        if (!active) return null
+        if (r.status === 404) {
+          setScanNotFound(true)
+          return null
+        }
+        return r.json()
+      })
+      .then(data => {
+        if (!active || !data) return
+        setScanMeta(data)
+      })
+      .catch(() => {})
+    return () => { active = false }
   }, [scanId, apiBase])
 
   const connect = useCallback(() => {
-    if (!scanId || scanComplete) return
+    if (!scanId || scanComplete || scanNotFound) return
     setSseError(false)
     const es = new EventSource(`${apiBase}/api/stream/${scanId}`)
     esRef.current = es
@@ -287,14 +303,35 @@ export default function ScanPage() {
   }, [scanId, apiBase, scanComplete, retryCount])
 
   useEffect(() => {
+    if (scanNotFound) return
     const cleanup = connect()
     return () => { esRef.current?.close(); cleanup?.() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scanId])
+  }, [scanId, scanNotFound])
 
   const findingsByAgent = findings.reduce<Record<string, number>>((acc, f) => { acc[f.agent] = (acc[f.agent] ?? 0) + 1; return acc }, {})
   const severityCounts = findings.reduce<Record<string, number>>((acc, f) => { acc[f.severity] = (acc[f.severity] ?? 0) + 1; return acc }, {})
   const completedAgents = Object.values(agentStatuses).filter(s => s === "complete").length
+
+  if (scanNotFound) {
+    return (
+      <div className="min-h-screen bg-[#060b14] text-slate-100 flex flex-col items-center justify-center p-6 text-center">
+        <div className="p-4 rounded-full bg-red-500/10 border border-red-500/20 mb-4">
+          <AlertTriangle className="w-8 h-8 text-red-400" />
+        </div>
+        <h1 className="text-xl font-bold text-slate-100 mb-2">Scan Not Found</h1>
+        <p className="text-sm text-slate-400 max-w-md mb-6">
+          The requested scan ID <code className="text-purple-400 font-mono bg-purple-500/10 px-1.5 py-0.5 rounded">{scanId}</code> does not exist or has expired from memory.
+        </p>
+        <button
+          onClick={() => router.push("/")}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-semibold transition"
+        >
+          <ArrowLeft className="w-4 h-4" /> Return to Dashboard
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-[#060b14] text-slate-100">
