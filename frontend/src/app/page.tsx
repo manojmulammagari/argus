@@ -75,9 +75,10 @@ export default function Home() {
         setErrorMessage("Server responded without a valid scan ID")
         setLoading(false)
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e)
-      setErrorMessage(e?.message || "Failed to connect to backend server")
+      const msg = e instanceof Error ? e.message : "Failed to connect to backend server"
+      setErrorMessage(msg)
       setLoading(false)
     }
   }
