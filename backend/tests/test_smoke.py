@@ -120,3 +120,28 @@ def test_google_genai_sdk_migration():
     import main_api
     assert hasattr(main_api, "gemini_client")
 
+
+def test_admission_control_concurrency_limit():
+    """
+    Regression for F-008: When active scan count reaches _MAX_CONCURRENT_SCANS,
+    new requests must be rejected immediately with 429.
+    """
+    from fastapi.testclient import TestClient
+    import main_api
+
+    client = TestClient(app)
+    orig_count = main_api._active_scan_count
+    orig_last = main_api._last_scan_started_at
+    try:
+        # Simulate that max concurrent scans are already running
+        main_api._active_scan_count = main_api._MAX_CONCURRENT_SCANS
+        main_api._last_scan_started_at = 0  # bypass cooldown check
+
+        resp = client.post("/api/demo")
+        assert resp.status_code == 429
+        assert "Too many scans" in resp.json()["detail"]
+    finally:
+        main_api._active_scan_count = orig_count
+        main_api._last_scan_started_at = orig_last
+
+

@@ -1054,31 +1054,35 @@ async def start_demo(background_tasks: BackgroundTasks, payload: Optional[DemoSc
         raise HTTPException(status_code=429, detail="Too many scans running — try again shortly")
     _last_scan_started_at = now
 
-    scan_id = str(uuid.uuid4())
-    repo = payload.repo_full_name if payload and payload.repo_full_name else "demo/vulnerable-app"
-    pr_num = payload.pr_number if payload and payload.pr_number is not None else 42
-    _now_ts = time.time()
-    SCANS[scan_id] = {
-        "id": scan_id,
-        "repo_full_name": repo,
-        "pr_number": pr_num,
-        "events": [],
-        "findings": [],
-        "done": False,
-        "created_at": datetime.fromtimestamp(_now_ts, tz=timezone.utc).isoformat(),
-        "created_at_ts": _now_ts,
-    }
+    _active_scan_count += 1
+    try:
+        scan_id = str(uuid.uuid4())
+        repo = payload.repo_full_name if payload and payload.repo_full_name else "demo/vulnerable-app"
+        pr_num = payload.pr_number if payload and payload.pr_number is not None else 42
+        _now_ts = time.time()
+        SCANS[scan_id] = {
+            "id": scan_id,
+            "repo_full_name": repo,
+            "pr_number": pr_num,
+            "events": [],
+            "findings": [],
+            "done": False,
+            "created_at": datetime.fromtimestamp(_now_ts, tz=timezone.utc).isoformat(),
+            "created_at_ts": _now_ts,
+        }
 
-    async def _tracked_run(sid: str, d: str):
-        global _active_scan_count
-        _active_scan_count += 1
-        try:
-            await run_full_scan(sid, d)
-        finally:
-            _active_scan_count -= 1
+        async def _tracked_run(sid: str, d: str):
+            global _active_scan_count
+            try:
+                await run_full_scan(sid, d)
+            finally:
+                _active_scan_count = max(0, _active_scan_count - 1)
 
-    background_tasks.add_task(_tracked_run, scan_id, DEMO_DIFF)
-    return {"scan_id": scan_id}
+        background_tasks.add_task(_tracked_run, scan_id, DEMO_DIFF)
+        return {"scan_id": scan_id}
+    except Exception:
+        _active_scan_count = max(0, _active_scan_count - 1)
+        raise
 
 @app.post("/api/scans/demo")
 async def start_demo_alias(background_tasks: BackgroundTasks, payload: Optional[DemoScanRequest] = None):
