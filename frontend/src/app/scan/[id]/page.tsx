@@ -361,8 +361,8 @@ export default function ScanPage() {
             ) : (
               <span className="text-xs text-emerald-400 flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5" /> Complete</span>
             )}
-            {remediationUrl ? (
-              <a href={remediationUrl} target="_blank" rel="noreferrer"
+            {remediationUrl && (remediationUrl.startsWith("https://") || remediationUrl.startsWith("http://")) ? (
+              <a href={remediationUrl} target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition"
                 style={{ backgroundColor: "rgba(34,197,94,0.1)", color: "#4ade80", border: "1px solid rgba(34,197,94,0.25)" }}>
                 <ExternalLink className="w-3 h-3" /> Fix PR Ready
