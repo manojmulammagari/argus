@@ -66,48 +66,78 @@ To bridge the gap between technical flaws and business risk, ARGUS integrates a 
 
 Experience ARGUS locally in under two minutes.
 
-> **Prerequisites:** Ensure you have **[Node.js](https://nodejs.org/)** (v18+) and **[Python](https://www.python.org/)** (3.10+) installed.
+> **Prerequisites:** Ensure you have **[Node.js](https://nodejs.org/)** (v20+) and **[Python](https://www.python.org/)** (3.11+ / 3.13) installed.
 
-### 1. Configure the Environment
-ARGUS uses **Groq** for high-speed inference and **Google Gemini** as a structural fallback.
+### 1. Zero-Key Instant Demo (No signup needed)
+ARGUS includes a built-in **Demo Mode**. If no API keys are configured, ARGUS automatically activates labeled demo data so you can evaluate the complete 6-agent swarm immediately:
+
 ```bash
-# Clone the repository (if not already local)
+# Clone the repository
 git clone https://github.com/manojmulammagari/argus.git
 cd argus
 
-# Duplicate the example environment file
-cp backend/.env.example backend/.env
-```
-*(Open `backend/.env` in your text editor and paste in your API keys).*
-
-### 2. Boot the AI Backend (FastAPI)
-Open a terminal and start the backend engine. *We strongly recommend using a virtual environment.*
-```bash
+# Start backend (:8000)
 cd backend
 python -m venv venv
-
-# Activate (Windows):
-venv\Scripts\activate
-# Activate (Mac/Linux):
-# source venv/bin/activate
-
+# Windows: venv\Scripts\activate | Mac/Linux: source venv/bin/activate
 pip install -r requirements.txt
 python -m uvicorn main_api:app --reload
-```
 
-### 3. Boot the Dashboard (Next.js)
-Open a **second, separate terminal** and start the frontend interface:
-```bash
-cd frontend
+# In a second terminal, start dashboard (:3000)
+cd ../frontend
 npm install
 npm run dev
 ```
+Navigate to 👉 **[http://localhost:3000](http://localhost:3000)** and click **"Start Demo Scan"**.
 
-### 4. Initiate the Swarm
-Navigate to 👉 **[http://localhost:3000](http://localhost:3000)** in your browser. Click **"Start Demo Scan"** to watch the real-time SSE event stream as the agents analyze, exploit, and patch the vulnerable repository.
+---
+
+### 2. Live LLM Inference Mode (Optional)
+To use real live inference across Groq and Google Gemini:
+
+```bash
+# In backend/ directory
+cp .env.example .env
+```
+Add your free API keys:
+- **Groq API Key:** Free at [console.groq.com](https://console.groq.com) (primary engine, streams at 300+ tok/s)
+- **Gemini API Key:** Free at [aistudio.google.com](https://aistudio.google.com) (backup engine)
+
+### Environment Variables
+
+| Variable | Description | Required? | Default |
+| :--- | :--- | :--- | :--- |
+| `GROQ_API_KEY` | Primary LLM inference key (Groq free tier) | Optional* | None |
+| `GEMINI_API_KEY` | Secondary / fallback LLM key (Google AI Studio) | Optional* | None |
+| `PORT` | Backend HTTP port | Optional | `8000` |
+| `ALLOWED_ORIGINS` | Comma-separated CORS origins | Optional | `http://localhost:3000,http://127.0.0.1:3000` |
+| `NEXT_PUBLIC_API_URL` | Backend URL for frontend Next.js requests | Optional | `http://localhost:8000` |
+
+*\*If neither key is set, ARGUS operates in built-in Demo Mode.*
+
+---
+
+## 📡 API & SSE Streaming Contract
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/demo` | Dispatches an autonomous scan job |
+| `GET` | `/api/stream/{scan_id}` | Real-time Server-Sent Events (SSE) event stream |
+| `GET` | `/api/scans` | Lists recent scans in memory (bounded by 1-hour TTL) |
+| `GET` | `/api/scans/{scan_id}` | Retrieves scan metadata, findings, and kill chain |
+| `POST` | `/api/scans/{scan_id}/approve` | Approves remediation and triggers completion |
+| `GET` | `/health` | Service healthcheck & LLM provider status |
+
+---
+
+## ⚖️ Architecture Decisions & Limitations
+
+- **In-memory state:** Live demo scans are stored in memory with a 1-hour TTL and admission control (max 3 concurrent scans). Persistent PostgreSQL schema (`backend/schema.sql`) is provided for durable storage deployments.
+- **Fail-safe agent isolation:** Each agent runs in a guarded 90-second timeout. If any provider experiences rate limits or network issues, the remaining agents complete normally.
 
 <br />
 
 <div align="center">
   <i>Engineered for the future of autonomous security.</i>
 </div>
+
