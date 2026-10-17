@@ -156,7 +156,14 @@ function AgentCard({ agentKey, traces, status, findingCount }: {
         </div>
       </div>
 
-      <div ref={logRef} className="h-28 overflow-y-auto px-3.5 pb-3 space-y-0.5 font-mono text-[10.5px] leading-relaxed scrollbar-none">
+      <div
+        ref={logRef}
+        role="log"
+        aria-live="polite"
+        aria-atomic="false"
+        aria-label={`${cfg.name} execution trace`}
+        className="h-28 overflow-y-auto px-3.5 pb-3 space-y-0.5 font-mono text-[10.5px] leading-relaxed scrollbar-none"
+      >
         {traces.length === 0 ? (
           <span className="text-slate-700">Waiting to dispatch...</span>
         ) : (
