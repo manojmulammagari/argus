@@ -3,4 +3,40 @@
 @tailwind utilities;
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { background: #060b14; color: white; }
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #060911;
+  color: #f1f5f9;
+  /* Subtle radial cyber grid background */
+  background-image: radial-gradient(#1e293b 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-attachment: fixed;
+}
+
+.font-mono {
+  font-family: var(--font-code), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@layer utilities {
+  .glass-panel {
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(51, 65, 85, 0.8);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+  }
+  .text-shadow {
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+  }
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #060911; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+.scrollbar-none::-webkit-scrollbar { display: none; }
