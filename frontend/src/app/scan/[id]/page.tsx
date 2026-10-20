@@ -5,7 +5,7 @@ import type { ReactNode } from "react"
 import { useParams, useRouter } from "next/navigation"
 import {
   Shield, Scale, Eye, Brain, Wrench, Target,
-  AlertTriangle, CheckCircle2, Clock, ArrowLeft,
+  AlertTriangle, CheckCircle2, Clock, ArrowLeft, RefreshCw,
   ExternalLink, ChevronRight, Activity, Skull,
   Zap, Copy, FileCode2, ShieldCheck, X, GitPullRequest,
 } from "lucide-react"
@@ -74,6 +74,7 @@ interface ScanMeta {
   completed_agents?: string[]
   agent_errors?: Record<string, string>
   consensus?: ConsensusData
+  flowdesk_telemetry?: Record<string, unknown>
   error?: string | null
   created_at?: string
 }
@@ -144,16 +145,28 @@ function verdictFor(
   complete: boolean,
   serverVerdict?: string | null,
   scanStatus?: string | null,
-  failedCount = 0
+  failedCount = 0,
+  healthyAgents = 0,
+  findingsCount = 0,
+  isDegraded = false
 ) {
-  if (!complete) return { label: "SCANNING", tone: "amber" as const }
+  // Bug #4: Fail-closed — never show "SECURITY CHECK PASSED" when scan failed or is incomplete
+  if (scanStatus === "error" || scanStatus === "failed") {
+    return { label: "✖ SCAN FAILED — UNVERIFIED", tone: "rose" as const }
+  }
+
+  if (!complete) return { label: "⟳ AUDIT IN PROGRESS…", tone: "amber" as const }
+
+  if (scanStatus === "degraded" || failedCount > 0 || isDegraded) {
+    return { label: "⚠ PARTIAL SCAN — MANUAL REVIEW", tone: "amber" as const }
+  }
 
   if (serverVerdict) {
     if (serverVerdict === "SCAN INCOMPLETE / ANALYSIS FAILED" || serverVerdict === "SCAN ERROR") {
-      return { label: serverVerdict, tone: "rose" as const }
+      return { label: "✖ SCAN FAILED — UNVERIFIED", tone: "rose" as const }
     }
     if (serverVerdict === "SCAN DEGRADED") {
-      return { label: "SCAN DEGRADED", tone: "amber" as const }
+      return { label: "⚠ PARTIAL SCAN — MANUAL REVIEW", tone: "amber" as const }
     }
     if (serverVerdict === "CRITICAL VULNERABILITIES FOUND") {
       return { label: serverVerdict, tone: "rose" as const }
@@ -162,20 +175,21 @@ function verdictFor(
       return { label: serverVerdict, tone: "amber" as const }
     }
     if (serverVerdict === "SECURITY CHECK PASSED") {
-      if (failedCount > 0 || scanStatus === "degraded" || scanStatus === "error") {
-        return { label: "SCAN DEGRADED", tone: "amber" as const }
+      // Only show SECURITY CHECK PASSED when scan is complete, no error, and healthy agents exist
+      if (healthyAgents > 0 && findingsCount === 0) {
+        return { label: "● SECURITY CHECK PASSED", tone: "emerald" as const }
       }
-      return { label: "SECURITY CHECK PASSED", tone: "emerald" as const }
+      return { label: "⚠ PARTIAL SCAN — MANUAL REVIEW", tone: "amber" as const }
     }
   }
 
-  if (failedCount > 0 || scanStatus === "degraded" || scanStatus === "error") {
-    return { label: "SCAN DEGRADED", tone: "amber" as const }
-  }
   const r = risk ?? 0
   if (r >= 65) return { label: "CRITICAL VULNERABILITIES FOUND", tone: "rose" as const }
   if (r >= 25) return { label: "SECURITY REVIEW ADVISED", tone: "amber" as const }
-  return { label: "SECURITY CHECK PASSED", tone: "emerald" as const }
+  if (healthyAgents > 0 && findingsCount === 0) {
+    return { label: "● SECURITY CHECK PASSED", tone: "emerald" as const }
+  }
+  return { label: "⚠ PARTIAL SCAN — MANUAL REVIEW", tone: "amber" as const }
 }
 
 function githubStateBadge(state?: string | null) {
@@ -248,8 +262,8 @@ function Kpi({ label, children, hint }: { label: string; children: ReactNode; hi
 /* ────────────────────────────────────────────────────────────────────────────
  * Agent live-status card (3-line scrollable mono box)
  * ────────────────────────────────────────────────────────────────────────── */
-function AgentCard({ agentKey, traces, status, findingCount, errorMessage }: {
-  agentKey: AgentKey; traces: string[]; status: string; findingCount: number; errorMessage?: string
+function AgentCard({ agentKey, traces, status, findingCount, errorMessage, scanStatus }: {
+  agentKey: AgentKey; traces: string[]; status: string; findingCount: number; errorMessage?: string; scanStatus?: string | null
 }) {
   const cfg = AGENTS[agentKey]
   const { Icon } = cfg
@@ -263,22 +277,25 @@ function AgentCard({ agentKey, traces, status, findingCount, errorMessage }: {
   }, [clean, errorMessage])
 
   const isError = status === "error" || status === "failed"
+  const isAborted = !isError && status !== "complete" && scanStatus === "error"
 
   const state =
     isError ? { label: "FAILED", cls: "text-red-400 bg-red-500/15 border-red-500/40", pulse: false }
-    : status === "running" ? { label: "SCANNING", cls: "text-cyan-300 bg-cyan-500/10 border-cyan-500/30", pulse: true }
-    : status === "complete" && findingCount > 0 ? { label: "FLAGGED", cls: "text-rose-300 bg-rose-500/10 border-rose-500/30", pulse: false }
-    : status === "complete" ? { label: "CLEAN", cls: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30", pulse: false }
-    : { label: "IDLE", cls: "text-slate-500 bg-slate-500/10 border-slate-500/25", pulse: false }
+      : isAborted ? { label: "ABORTED", cls: "text-rose-400 bg-rose-500/15 border-rose-500/40", pulse: false }
+        : status === "running" ? { label: "SCANNING", cls: "text-cyan-300 bg-cyan-500/10 border-cyan-500/30", pulse: true }
+          : status === "complete" && findingCount > 0 ? { label: "FLAGGED", cls: "text-rose-300 bg-rose-500/10 border-rose-500/30", pulse: false }
+            : status === "complete" ? { label: "CLEAN", cls: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30", pulse: false }
+              : { label: "IDLE", cls: "text-slate-500 bg-slate-500/10 border-slate-500/25", pulse: false }
+
+  const showErrorStyle = isError || isAborted
 
   return (
     <div
-      className={`glass-panel rounded-xl p-3.5 transition-all ${
-        isError ? "border-red-500/40 bg-red-950/20 shadow-lg shadow-red-950/30" : ""
-      }`}
+      className={`glass-panel rounded-xl p-3.5 transition-all ${showErrorStyle ? "border-red-500/40 bg-red-950/20 shadow-lg shadow-red-950/30" : ""
+        }`}
       style={{
-        borderColor: isError ? "rgba(239,68,68,0.45)" : status === "running" ? cfg.border : undefined,
-        backgroundColor: isError ? "rgba(239,68,68,0.06)" : undefined,
+        borderColor: showErrorStyle ? "rgba(239,68,68,0.45)" : status === "running" ? cfg.border : undefined,
+        backgroundColor: showErrorStyle ? "rgba(239,68,68,0.06)" : undefined,
       }}
     >
       <div className="flex items-center justify-between gap-2 mb-2">
@@ -286,14 +303,14 @@ function AgentCard({ agentKey, traces, status, findingCount, errorMessage }: {
           <div
             className="p-1.5 rounded-lg shrink-0"
             style={{
-              backgroundColor: isError ? "rgba(239,68,68,0.15)" : cfg.bg,
-              border: `1px solid ${isError ? "rgba(239,68,68,0.35)" : cfg.border}`,
+              backgroundColor: showErrorStyle ? "rgba(239,68,68,0.15)" : cfg.bg,
+              border: `1px solid ${showErrorStyle ? "rgba(239,68,68,0.35)" : cfg.border}`,
             }}
           >
-            <Icon className="w-3.5 h-3.5" style={{ color: isError ? "#f87171" : cfg.text }} />
+            <Icon className="w-3.5 h-3.5" style={{ color: showErrorStyle ? "#f87171" : cfg.text }} />
           </div>
           <div className="min-w-0">
-            <div className="text-xs font-semibold leading-tight truncate" style={{ color: isError ? "#f87171" : cfg.text }}>
+            <div className="text-xs font-semibold leading-tight truncate" style={{ color: showErrorStyle ? "#f87171" : cfg.text }}>
               {cfg.name}
             </div>
             <div className="text-[9px] text-slate-500 truncate">{cfg.role}</div>
@@ -309,23 +326,22 @@ function AgentCard({ agentKey, traces, status, findingCount, errorMessage }: {
         role="log"
         aria-live="polite"
         aria-label={`${cfg.name} live status`}
-        className={`h-[54px] overflow-y-auto rounded-lg px-2.5 py-1.5 space-y-0.5 text-xs font-mono leading-[18px] ${
-          isError
+        className={`h-[54px] overflow-y-auto rounded-lg px-2.5 py-1.5 space-y-0.5 text-xs font-mono leading-[18px] ${showErrorStyle
             ? "bg-red-950/40 border border-red-500/30 text-red-300"
             : "bg-slate-950/60 border border-slate-800/60 text-slate-300"
-        }`}
+          }`}
       >
-        {isError && errorMessage ? (
+        {showErrorStyle && errorMessage ? (
           <div className="text-red-400 font-medium truncate" title={errorMessage}>
             ⚠ {errorMessage}
           </div>
         ) : clean.length === 0 ? (
-          <div className={isError ? "text-red-400" : "text-slate-600"}>
-            {isError ? "Execution halted — engine failure" : "Waiting to dispatch…"}
+          <div className={showErrorStyle ? "text-red-400" : "text-slate-600"}>
+            {isAborted ? "Pipeline halted during pre-flight ingest" : isError ? "Execution halted — engine failure" : "Waiting to dispatch…"}
           </div>
         ) : null}
         {clean.slice(-10).map((t, i) => (
-          <div key={i} className={`truncate ${isError && i === clean.length - 1 ? "text-red-400 font-medium" : ""}`}>
+          <div key={i} className={`truncate ${showErrorStyle && i === clean.length - 1 ? "text-red-400 font-medium" : ""}`}>
             {t}
           </div>
         ))}
@@ -351,6 +367,183 @@ function KillChain({ steps }: { steps: string[] }) {
           <p className="text-xs text-slate-300 leading-snug pb-3">{step}</p>
         </div>
       ))}
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Flowdesk Live Pipeline Stepper
+ * ────────────────────────────────────────────────────────────────────────── */
+const FLOW_NODES = [
+  { key: "FLOW_INIT", label: "Init", desc: "Scan initialized" },
+  { key: "GITHUB_INGEST", label: "GitHub API", desc: "PR metadata + diff fetched" },
+  { key: "DIFF_AST_INDEXING", label: "Diff Index", desc: "Lockfiles filtered, lines indexed" },
+  { key: "XML_SANITIZATION", label: "Sanitize", desc: "Diff sanitized for LLM prompts" },
+  { key: "PARALLEL_SWARM", label: "Agent Swarm", desc: "6 agents analyze in parallel" },
+  { key: "EVIDENCE_GATE", label: "Evidence Gate", desc: "Hallucinations filtered out" },
+  { key: "BREACH_ORACLE", label: "Breach Oracle", desc: "Historical breach correlation" },
+  { key: "REMEDY_SYNTHESIS", label: "RemedyBot", desc: "Unified-diff patch generated" },
+  { key: "FLOW_COMPLETE", label: "Complete", desc: "Scan finished" },
+]
+
+function flowNodeStatus(key: string, telemetry: Record<string, unknown> | null, scanError: string | null): "pending" | "active" | "done" | "error" {
+  if (!telemetry) return "pending"
+  const active = String(telemetry.active_node || "")
+  const completed = Array.isArray(telemetry.completed_nodes) ? (telemetry.completed_nodes as string[]) : []
+  if (scanError && active === key) return "error"
+  if (active === key) return "active"
+  if (completed.includes(key)) return "done"
+  return "pending"
+}
+
+function FlowdeskStepper({ telemetry, scanError }: { telemetry: Record<string, unknown> | null; scanError: string | null }) {
+  const activeNode = telemetry ? String(telemetry.active_node || "FLOW_INIT") : "FLOW_INIT"
+  const completed = telemetry && Array.isArray(telemetry.completed_nodes)
+    ? (telemetry.completed_nodes as string[])
+    : []
+  const meta = telemetry && typeof telemetry.meta === "object" ? telemetry.meta as Record<string, unknown> : {}
+
+  const rateLimit = String(meta.rate_limit_remaining || "—")
+  const pagesFetched = (meta.pages_fetched as number) ?? 0
+  const ignoredLockfiles = (meta.ignored_lockfiles_count as number) ?? 0
+  const hallucinations = (telemetry?.filtered_hallucinations_count as number) ?? 0
+
+  return (
+    <div className="glass-panel rounded-2xl p-4 mb-4 border border-slate-800/50">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Activity className="w-3.5 h-3.5 text-cyan-400" />
+          <h2 className="font-bold text-sm text-slate-100">Flowdesk Pipeline</h2>
+        </div>
+        <span className="text-[9px] font-mono text-slate-500">
+          {activeNode.replace(/_/g, " ")}
+        </span>
+      </div>
+
+      {/* Node stepper — full labels, no truncation */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
+        {FLOW_NODES.map((node, i) => {
+          const status = flowNodeStatus(node.key, telemetry, scanError)
+          const isLast = i === FLOW_NODES.length - 1
+          const done = status === "done"
+          const active = status === "active"
+          const isError = status === "error"
+          return (
+            <div key={node.key} className="flex flex-col items-center gap-1.5 shrink-0">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold transition-all ${
+                done
+                  ? "bg-emerald-500 text-white border border-emerald-400"
+                  : active
+                    ? "bg-cyan-500 text-white border border-cyan-400 animate-ping"
+                    : isError
+                      ? "bg-rose-500/20 text-rose-400 border border-rose-500"
+                      : "bg-slate-900 text-slate-500 border border-slate-800"
+              }`}>
+                {done ? (
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                ) : active || isError ? (
+                  <Activity className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  i + 1
+                )}
+              </div>
+              <span className={`text-[9px] text-center leading-tight font-medium ${done || active || isError ? "text-slate-200" : "text-slate-500"}`} title={node.label}>
+                {node.label}
+              </span>
+              {!isLast && (
+                <div className={`w-6 h-px ${done || active ? "bg-cyan-500/50" : "bg-slate-800"}`} />
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Telemetry stats row — balanced 5-column grid (Bug #9 fix) */}
+      <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className="bg-slate-900/50 rounded-xl p-2.5 border border-slate-800/40">
+          <div className="text-[9px] text-slate-500 uppercase tracking-wider">Stage</div>
+          <div className="text-sm font-mono text-slate-300 truncate" title={activeNode}>
+            {activeNode.replace(/_/g, " ")}
+          </div>
+        </div>
+        <div className="bg-slate-900/50 rounded-xl p-2.5 border border-slate-800/40">
+          <div className="text-[9px] text-slate-500 uppercase tracking-wider">Rate Limit</div>
+          <div className="text-sm font-mono text-slate-300">{rateLimit}</div>
+        </div>
+        <div className="bg-slate-900/50 rounded-xl p-2.5 border border-slate-800/40">
+          <div className="text-[9px] text-slate-500 uppercase tracking-wider">Pages</div>
+          <div className="text-sm font-mono text-slate-300">{pagesFetched}</div>
+        </div>
+        <div className="bg-slate-900/50 rounded-xl p-2.5 border border-slate-800/40">
+          <div className="text-[9px] text-slate-500 uppercase tracking-wider">Lockfiles</div>
+          <div className="text-sm font-mono text-slate-300">{ignoredLockfiles}</div>
+        </div>
+        <div className="bg-slate-900/50 rounded-xl p-2.5 border border-slate-800/40">
+          <div className="text-[9px] text-slate-500 uppercase tracking-wider">Hallucinations</div>
+          <div className="text-sm font-mono text-slate-300">{hallucinations}</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Diagnostic & Recovery Panel (flow_state === "ERROR")
+ * ────────────────────────────────────────────────────────────────────────── */
+function DiagnosticPanel({ error, scanStatus }: { error: string | null; scanStatus: string | null }) {
+  const router = useRouter()
+  const isRateLimit = Boolean(error && /rate limit|403|429/i.test(error))
+  const isNotFound = Boolean(error && /404|not found/i.test(error))
+  const isTimeout = Boolean(error && /timed? out|504|timeout/i.test(error))
+
+  return (
+    <div className="rounded-2xl p-5 border border-rose-500/40 bg-rose-900/20 shadow-lg shadow-rose-900/30">
+      <div className="flex items-start gap-3 mb-3">
+        <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-rose-300 text-sm">Diagnostic &amp; Recovery</div>
+          <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+            {error || "An unknown error occurred during scanning."}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+        <div className="bg-rose-900/40 rounded-xl p-3 border border-rose-500/30">
+          <div className="text-[9px] text-rose-400 uppercase tracking-wider font-bold">HTTP Status</div>
+          <div className="text-sm font-mono text-rose-300">
+            {isNotFound ? "404" : isRateLimit ? "403/429" : isTimeout ? "504" : "—"}
+          </div>
+        </div>
+        <div className="bg-rose-900/40 rounded-xl p-3 border border-rose-500/30">
+          <div className="text-[9px] text-rose-400 uppercase tracking-wider font-bold">Root Cause</div>
+          <div className="text-sm font-mono text-rose-300 truncate">
+            {isNotFound ? "PR or repository not found"
+              : isRateLimit ? "GitHub API rate limit exceeded"
+                : isTimeout ? "Request timed out"
+                  : "Scan engine error"}
+          </div>
+        </div>
+        <div className="bg-rose-900/40 rounded-xl p-3 border border-rose-500/30">
+          <div className="text-[9px] text-rose-400 uppercase tracking-wider font-bold">Scan Status</div>
+          <div className="text-sm font-mono text-rose-300 uppercase">{scanStatus || "error"}</div>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => window.location.reload()}
+          className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-all shadow-lg shadow-rose-900/40"
+        >
+          <RefreshCw className="w-3.5 h-3.5" /> Retry Scan
+        </button>
+        <button
+          onClick={() => router.push("/")}
+          className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-all"
+        >
+          Back to Command Center
+        </button>
+      </div>
     </div>
   )
 }
@@ -391,6 +584,7 @@ export default function ScanPage() {
   const [completedAgents, setCompletedAgents] = useState<string[]>([])
   const [agentErrors, setAgentErrors] = useState<Record<string, string>>({})
   const [consensusData, setConsensusData] = useState<ConsensusData | null>(null)
+  const [flowdeskTelemetry, setFlowdeskTelemetry] = useState<Record<string, unknown> | null>(null)
 
   const esRef = useRef<EventSource | null>(null)
   const scanCompleteRef = useRef(false)
@@ -423,6 +617,9 @@ export default function ScanPage() {
     }
     if (data.consensus && typeof data.consensus === "object") {
       setConsensusData(data.consensus as ConsensusData)
+    }
+    if (data.flowdesk_telemetry && typeof data.flowdesk_telemetry === "object") {
+      setFlowdeskTelemetry(data.flowdesk_telemetry as Record<string, unknown>)
     }
     if (Array.isArray(data.attack_chain)) setKillChain(data.attack_chain as string[])
     if (typeof data.remediation_pr_url === "string") setRemediationUrl(data.remediation_pr_url)
@@ -472,6 +669,9 @@ export default function ScanPage() {
         if (Array.isArray(data.completed_agents)) setCompletedAgents(data.completed_agents)
         if (data.agent_errors) setAgentErrors(data.agent_errors)
         if (data.consensus) setConsensusData(data.consensus)
+        if (data.flowdesk_telemetry && typeof data.flowdesk_telemetry === "object") {
+          setFlowdeskTelemetry(data.flowdesk_telemetry as Record<string, unknown>)
+        }
         if (typeof data.files_scanned === "number") setFilesScanned(data.files_scanned)
         if (Array.isArray(data.files) && data.files.length) setScannedFiles(data.files)
         if (Array.isArray(data.breach_oracle) && data.breach_oracle.length) setBreachOracle(data.breach_oracle)
@@ -484,7 +684,7 @@ export default function ScanPage() {
           setScanComplete(true)
         }
       })
-      .catch(() => {})
+      .catch(() => { })
     return () => { active = false }
   }, [scanId, apiBase])
 
@@ -568,7 +768,7 @@ export default function ScanPage() {
             setScanComplete(true)
           }
         })
-        .catch(() => {})
+        .catch(() => { })
     }
     return () => es.close()
   }, [scanId, apiBase, scanNotFound, applySummary])
@@ -636,7 +836,7 @@ export default function ScanPage() {
   const effectiveVerdict = verdict || scanMeta?.verdict
   const effectiveScanStatus = scanStatus || scanMeta?.scan_status
 
-  const pill = verdictFor(riskScore, scanComplete, effectiveVerdict, effectiveScanStatus, failedCount)
+  const pill = verdictFor(riskScore, scanComplete, effectiveVerdict, effectiveScanStatus, failedCount, healthyCount, findings.length, Boolean(consensusData?.is_degraded))
   const pillTone = TONE[pill.tone]
 
   /* Deduplicate breach oracle cards by (cwe_id, breach name) — defensive; backend already dedupes */
@@ -644,14 +844,14 @@ export default function ScanPage() {
     const source: BreachCard[] = breachOracle.length
       ? breachOracle
       : findings
-          .filter(f => f.breach_citation)
-          .map(f => ({
-            cwe_id: f.cwe_id || "CWE-200",
-            breach: f.breach_citation!.breach,
-            year: f.breach_citation!.year,
-            records: f.breach_citation!.records,
-            fine: f.breach_citation!.fine,
-          }))
+        .filter(f => f.breach_citation)
+        .map(f => ({
+          cwe_id: f.cwe_id || "CWE-200",
+          breach: f.breach_citation!.breach,
+          year: f.breach_citation!.year,
+          records: f.breach_citation!.records,
+          fine: f.breach_citation!.fine,
+        }))
     const seen = new Set<string>()
     const out: BreachCard[] = []
     for (const c of source) {
@@ -693,7 +893,7 @@ export default function ScanPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#05070d] text-slate-100 selection:bg-cyan-500/30">
+    <div className="min-h-screen bg-[#05070d] text-slate-100 selection:bg-cyan-500/30 pb-16">
       {/* ── Sticky header: PR title + GitHub state + verdict ─────────────── */}
       <header className="sticky top-0 z-40 border-b border-slate-800/70 bg-[#05070d]/90 backdrop-blur-xl">
         <div className="max-w-[1400px] mx-auto px-4 h-16 flex items-center justify-between gap-3">
@@ -723,7 +923,7 @@ export default function ScanPage() {
                 )}
               </div>
               <h1 className="text-sm font-semibold text-slate-100 truncate" title={prContext.title ?? ""}>
-                {prContext.title || "Loading pull request context…"}
+                {prContext.title || (scanError ? "Unable to load PR metadata — see diagnostic error below" : "Loading pull request context…")}
               </h1>
             </div>
           </div>
@@ -737,6 +937,17 @@ export default function ScanPage() {
                 style={{ backgroundColor: pillTone.text, boxShadow: `0 0 8px ${pillTone.text}` }} />
               {pill.label}
             </span>
+            {repoName && prNumber && (
+              <a
+                href={prLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-all hover:brightness-105"
+                style={{ background: "rgba(99,102,241,0.12)", color: "#818cf8", border: "1px solid rgba(99,102,241,0.35)" }}
+              >
+                <GitPullRequest className="w-3 h-3" /> View PR on GitHub&nbsp;↗
+              </a>
+            )}
             {hasPatch && (
               <a
                 href={remediationUrl ?? "#"}
@@ -759,11 +970,15 @@ export default function ScanPage() {
         )}
       </header>
 
+      {/* Flowdesk Live Pipeline Stepper */}
+      <FlowdeskStepper telemetry={flowdeskTelemetry} scanError={scanError} />
+
       <div className="max-w-[1400px] mx-auto px-4 py-5">
-        {scanError && (
-          <div className={`mb-4 p-3.5 rounded-xl border text-sm flex items-start gap-3 ${
-            scanComplete ? "bg-rose-500/10 border-rose-500/30 text-rose-300" : "bg-amber-500/10 border-amber-500/30 text-amber-300"
-          }`}>
+        {scanError && scanStatus === "error" ? (
+          <DiagnosticPanel error={scanError} scanStatus={scanStatus} />
+        ) : scanError && (
+          <div className={`mb-4 p-3.5 rounded-xl border text-sm flex items-start gap-3 ${scanComplete ? "bg-rose-500/10 border-rose-500/30 text-rose-300" : "bg-amber-500/10 border-amber-500/30 text-amber-300"
+            }`}>
             <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
             <div>
               <div className="font-semibold">{scanComplete ? "Scan Failed" : "Scan Notice"}</div>
@@ -809,14 +1024,15 @@ export default function ScanPage() {
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
           {/* 1 · Risk Score */}
           <div className="glass-panel rounded-xl p-4 flex items-center gap-3">
-            <MiniGauge score={scanComplete ? (riskScore ?? 0) : riskScore} />
+            <MiniGauge score={scanComplete && !scanError ? (riskScore ?? 0) : null} />
             <div className="min-w-0">
-              <div className="text-2xl font-black tabular-nums text-slate-100 leading-none">{riskScore ?? 0}</div>
+              <div className={`text-2xl font-black tabular-nums leading-none ${scanComplete && !scanError ? "text-slate-100" : "text-slate-500"}`}>
+                {scanComplete && !scanError ? (riskScore ?? 0) : "—"}
+              </div>
               <div className="text-[9px] text-slate-500 uppercase tracking-wider mt-0.5">Score / 100</div>
-              <div className={`text-[10px] font-bold uppercase tracking-wider mt-1 ${
-                (riskScore ?? 0) >= 65 ? "text-rose-400" : (riskScore ?? 0) >= 25 ? "text-amber-400" : "text-emerald-400"
-              }`}>
-                {(riskScore ?? 0) >= 65 ? "Critical" : (riskScore ?? 0) >= 25 ? "Elevated" : "Low"}
+              <div className={`text-[10px] font-bold uppercase tracking-wider mt-1 ${scanComplete && !scanError ? ((riskScore ?? 0) >= 65 ? "text-rose-400" : (riskScore ?? 0) >= 25 ? "text-amber-400" : "text-emerald-400") : "text-slate-500"
+                }`}>
+                {scanComplete && !scanError ? ((riskScore ?? 0) >= 65 ? "Critical" : (riskScore ?? 0) >= 25 ? "Elevated" : "Low") : scanError ? "UNVERIFIED" : "SCANNING…"}
               </div>
             </div>
           </div>
@@ -869,11 +1085,10 @@ export default function ScanPage() {
           >
             <div className="flex items-center gap-2">
               <GitPullRequest className="w-4 h-4 text-slate-500" />
-              <span className={`text-sm font-black uppercase tracking-wide ${
-                (prContext.state || "").toUpperCase() === "MERGED" ? "text-purple-300"
-                : (prContext.state || "").toUpperCase() === "CLOSED" ? "text-rose-300"
-                : "text-emerald-300"
-              }`}>
+              <span className={`text-sm font-black uppercase tracking-wide ${(prContext.state || "").toUpperCase() === "MERGED" ? "text-purple-300"
+                  : (prContext.state || "").toUpperCase() === "CLOSED" ? "text-rose-300"
+                    : "text-emerald-300"
+                }`}>
                 {prContext.state || "—"}
               </span>
             </div>
@@ -914,6 +1129,7 @@ export default function ScanPage() {
               status={actualFailedAgents.includes(key) ? "error" : (agentStatuses[key] ?? "")}
               findingCount={findingsByAgent[key] ?? 0}
               errorMessage={agentErrors[key]}
+              scanStatus={effectiveScanStatus}
             />
           ))}
         </div>
@@ -931,7 +1147,22 @@ export default function ScanPage() {
             </div>
 
             {scanComplete && findings.length === 0 ? (
-              isSwarmDegraded ? (
+              scanError ? (
+                <div className="flex flex-col items-center justify-center py-8 text-center rounded-xl border border-dashed border-rose-500/40 bg-rose-900/10 px-4">
+                  <AlertTriangle className="w-8 h-8 text-rose-400 mb-2" />
+                  <h3 className="text-sm font-bold text-rose-300">Audit Halted — Unverified State</h3>
+                  <p className="text-[11px] text-slate-400 mt-1 max-w-lg leading-relaxed">
+                    Scan failed before swarm verification completed. Code safety cannot be certified.{" "}
+                    {scanError}
+                  </p>
+                  <button
+                    onClick={() => window.location.reload()}
+                    className="mt-4 px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-all shadow-lg shadow-rose-900/40"
+                  >
+                    <RefreshCw className="w-3 h-3" /> Retry Scan
+                  </button>
+                </div>
+              ) : isSwarmDegraded ? (
                 <div className="flex flex-col items-center justify-center py-8 text-center rounded-xl border border-dashed border-amber-500/40 bg-amber-500/10 px-4">
                   <AlertTriangle className="w-8 h-8 text-amber-400 mb-2" />
                   <h3 className="text-sm font-bold text-amber-300">Analysis Incomplete — Engines Unavailable</h3>
@@ -1063,7 +1294,7 @@ export default function ScanPage() {
                 <KillChain steps={killChain} />
               ) : (
                 <div className="text-center py-6 text-slate-500 text-xs">
-                  {scanComplete ? "No kill chain generated — attack surface neutralized." : "Red Team Ω constructing adversarial path…"}
+                  {scanError ? "Scan aborted — threat modeling unavailable." : scanComplete ? "No kill chain generated — attack surface neutralized." : "Red Team Ω constructing adversarial path…"}
                 </div>
               )}
             </div>
