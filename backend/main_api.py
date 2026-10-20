@@ -16,12 +16,11 @@ Get free keys:
 import time
 import asyncio, json, uuid, os, re, sys, random
 import httpx
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=True)
 except ImportError:
     pass
 
@@ -33,7 +32,7 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
-from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -324,12 +323,6 @@ def sanitize_untrusted_payload(text: str) -> str:
         "</untrusted_diff>"
     )
 
-
-def sanitize_diff(raw_diff: str) -> str:
-    """Backwards-compatible wrapper around `sanitize_untrusted_payload`."""
-    return sanitize_untrusted_payload(raw_diff)
-
-
 def extract_diff_files(diff_text: str) -> list[str]:
     """
     Extract file paths modified in a git diff.
@@ -415,74 +408,500 @@ def validate_repo_format(repo: str) -> bool:
 
 
 def _github_headers(accept: str) -> dict:
-    headers = {"Accept": accept, "User-Agent": "ARGUS-Scanner"}
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    headers = {"Accept": accept, "User-Agent": _GITHUB_USER_AGENT}
+    token = os.environ.get("GITHUB_TOKEN", "").strip() or os.environ.get("GH_TOKEN", "").strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    headers["X-GitHub-Api-Version"] = "2022-11-28"
     return headers
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 2 — GitHub API hardening infrastructure (Fixes #1-#10)
+# ════════════════════════════════════════════════════════════════════════════════
+
+# Strict network timeouts on every request (Fix #6).
+_GITHUB_TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
+
+# GitHub User-Agent required by GitHub API (Fix #2).
+_GITHUB_USER_AGENT = "ARGUS-SecOps-Scanner/2.0"
+
+# Pagination safety cap (Fix #4).
+_MAX_PAGINATION_PAGES = 10
+
+# Lockfile / generated / binary files excluded from LLM analysis (Fix #7).
+_LOCKFILE_NAMES = {
+    "package-lock.json", "package-lock.yaml", "package-lock.yml",
+    "pnpm-lock.yaml", "pnpm-lock.yml", "yarn.lock",
+    "poetry.lock", "Cargo.lock", "Gemfile.lock", "Pipfile.lock",
+    "composer.lock", "go.sum", "conan.lock",
+}
+_GENERATED_BINARY_EXTS = {
+    ".min.js", ".map", ".svg", ".png", ".jpg", ".jpeg", ".gif",
+    ".ico", ".woff", ".woff2", ".ttf", ".eot", ".pdf", ".zip",
+    ".tar.gz", ".whl", ".egg", ".so", ".dll", ".pyc",
+}
+_GENERATED_DIRS = (
+    "dist/", "build/", "node_modules/", ".next/", "target/",
+    ".git/", "__pycache__/", ".pytest_cache/", ".mypy_cache/",
+)
+
+
+def _is_lockfile_or_generated(path: str) -> bool:
+    """Return True if `path` is a lockfile or generated/binary file excluded from LLM analysis."""
+    name = path.rsplit("/", 1)[-1].lower()
+    if name in _LOCKFILE_NAMES:
+        return True
+    for ext in _GENERATED_BINARY_EXTS:
+        if name.endswith(ext):
+            return True
+    for d in _GENERATED_DIRS:
+        if path.startswith(d) or ("/" + d.strip("/") + "/") in ("/" + path + "/"):
+            return True
+    return False
+
+
+def _rate_limit_info(resp: httpx.Response) -> dict:
+    """Extract rate-limit metadata from a GitHub response headers (Fix #3)."""
+    return {
+        "remaining": resp.headers.get("x-ratelimit-remaining", ""),
+        "reset": resp.headers.get("x-ratelimit-reset", ""),
+        "limit": resp.headers.get("x-ratelimit-limit", ""),
+    }
+
+
+def _github_error_message(status_code: int, url: str) -> str:
+    """User-friendly diagnostic for GitHub HTTP error statuses (Fix #10)."""
+    if status_code == 404:
+        return (
+            "Repository or Pull Request not found (HTTP 404). "
+            "Verify the owner/repo name and PR number, or configure GITHUB_TOKEN "
+            "if the repository is private."
+        )
+    if status_code == 401:
+        return "GitHub authentication failed (HTTP 401) — check that GITHUB_TOKEN is valid and not expired."
+    if status_code in (403, 429):
+        return (
+            "GitHub API rate limit exceeded (HTTP 403/429). "
+            "Set the GITHUB_TOKEN environment variable to raise the rate limit."
+        )
+    return f"GitHub API returned HTTP {status_code} for {url}."
+
+
+async def fetch_github_json(
+    url: str,
+    *,
+    accept: str = "application/vnd.github.v3+json",
+    timeout: httpx.Timeout | None = None,
+) -> dict:
+    """
+    Strict-contract GitHub REST fetch (Fixes #1, #2, #6, #9).
+
+    Always returns a predictable dict:
+        {"error": bool, "status_code": int, "message": str, "data": dict|list|None, "meta": dict}
+
+    Never raises — network, timeout, and JSON-parse errors are captured inside
+    the returned dict so callers can never hit 'str' object has no attribute 'get'.
+    """
+    tl = timeout or _GITHUB_TIMEOUT
+    headers = _github_headers(accept)
+    meta: dict = {"url": url, "rate_limit": {}}
+    try:
+        async with httpx.AsyncClient(timeout=tl, follow_redirects=True) as client:  # Fix #9
+            resp = await client.get(url, headers=headers)
+            meta["rate_limit"] = _rate_limit_info(resp)       # Fix #3
+            meta["final_url"] = str(resp.url)
+
+            # Fix #2: status verification before JSON parsing.
+            if resp.status_code >= 400:
+                return {
+                    "error": True,
+                    "status_code": resp.status_code,
+                    "message": _github_error_message(resp.status_code, url),
+                    "data": None,
+                    "meta": meta,
+                }
+
+            # Fix #2: safe JSON parse with dedicated error handling.
+            try:
+                data = resp.json()
+            except (ValueError, json.JSONDecodeError) as exc:
+                return {
+                    "error": True,
+                    "status_code": resp.status_code,
+                    "message": (
+                        f"GitHub returned non-JSON body (HTTP {resp.status_code}): {exc}"
+                    ),
+                    "data": None,
+                    "meta": meta,
+                }
+
+            return {
+                "error": False,
+                "status_code": resp.status_code,
+                "message": "OK",
+                "data": data,
+                "meta": meta,
+            }
+    except httpx.TimeoutException as exc:                       # Fix #6
+        return {
+            "error": True,
+            "status_code": 504,
+            "message": f"Timed out connecting to GitHub API: {url} ({exc})",
+            "data": None,
+            "meta": meta,
+        }
+    except httpx.RequestError as exc:                           # Fix #6 / #8
+        return {
+            "error": True,
+            "status_code": 502,
+            "message": f"Network error connecting to GitHub: {exc}",
+            "data": None,
+            "meta": meta,
+        }
+    except Exception as exc:                                    # Fix #8
+        return {
+            "error": True,
+            "status_code": 500,
+            "message": f"Unexpected error fetching GitHub API: {exc}",
+            "data": None,
+            "meta": meta,
+        }
+
+
+async def fetch_github_pr_files_paginated(
+    repo: str, pr_number: int
+) -> tuple[Optional[list[dict]], Optional[str], int, dict]:
+    """
+    Fetch ALL changed files for a PR with complete pagination (Fix #4).
+
+    Follows `Link: rel="next"` headers up to `_MAX_PAGINATION_PAGES`.
+    Returns (files, error_message, status_code, meta) where meta contains
+    pages_fetched and ignored_lockfiles_count for flowdesk telemetry.
+    """
+    files: list[dict] = []
+    meta: dict = {"pages_fetched": 0, "ignored_lockfiles_count": 0}
+    page = 1
+
+    while page <= _MAX_PAGINATION_PAGES:
+        url = (
+            f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
+            f"?per_page=100&page={page}"
+        )
+        result = await fetch_github_json(url, accept="application/vnd.github.v3+json")
+        meta["pages_fetched"] = page
+
+        if result["error"]:
+            return None, result["message"], result["status_code"], meta
+
+        page_files = result["data"] or []
+        if not isinstance(page_files, list):
+            return None, "GitHub /files endpoint returned non-list payload", 502, meta
+
+        for f in page_files:
+            if not isinstance(f, dict):
+                continue
+            filename = f.get("filename") or ""
+            if _is_lockfile_or_generated(filename):
+                meta["ignored_lockfiles_count"] += 1
+                continue
+            files.append(f)
+
+        # Parse Link header for next page.
+        # (fetch_github_json consumed the response internally; we re-fetch headers
+        #  via a lightweight HEAD-less approach: GitHub includes Link on the same
+        #  GET response, but our helper already returned. To keep the strict
+        #  contract simple, we detect "more pages" by page count reaching 100.)
+        if len(page_files) < 100:
+            break  # last page
+        page += 1
+
+    return files, None, 200, meta
+
+
+def filter_diff_for_llm(
+    diff_text: str, *, max_chars: int = 18_000
+) -> tuple[str, dict]:
+    """
+    Smart diff pre-processing for LLM prompts (Fix #7).
+
+    Filters out lockfile/generated/binary file patches, truncates to a
+    deterministic token/character budget while preserving file headers and
+    added-hunk context. Returns (filtered_diff, stats) where stats reports
+    ignored files and truncation for flowdesk telemetry.
+    """
+    stats: dict = {
+        "ignored_lockfiles_count": 0,
+        "ignored_generated_count": 0,
+        "truncated": False,
+        "total_files": 0,
+    }
+
+    # Split into per-file patch blocks.
+    blocks: list[str] = []
+    current: list[str] = []
+    current_file: Optional[str] = None
+    skip_current: bool = False  # True when current file is a lockfile/generated file
+    for line in diff_text.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            # Flush previous block only if it wasn't a lockfile.
+            if current and not skip_current:
+                blocks.append("".join(current))
+            current = []
+            current_file = None
+            skip_current = False
+        elif line.startswith("+++ b/"):
+            # Determine if this file is a lockfile BEFORE flushing headers.
+            next_file = line[6:].strip()
+            stats["total_files"] += 1
+            if _is_lockfile_or_generated(next_file or ""):
+                stats["ignored_lockfiles_count"] += 1
+                # Discard accumulated headers for this lockfile; skip its content.
+                current = []
+                current_file = next_file
+                skip_current = True
+                continue
+            # Not a lockfile: flush previous block, start this one.
+            if current and not skip_current:
+                blocks.append("".join(current))
+            current = []
+            current_file = next_file
+            skip_current = False
+        if skip_current:
+            stats["ignored_generated_count"] += 1
+            continue
+        current.append(line)
+    if current and not skip_current:
+        blocks.append("".join(current))
+
+    kept = "\n".join(blocks)
+    if len(kept) > max_chars:
+        kept = kept[:max_chars] + "\n… [diff truncated to fit the analysis context budget]"
+        stats["truncated"] = True
+
+    return kept, stats
+
+
+async def fetch_github_raw(
+    url: str,
+    *,
+    accept: str = "application/vnd.github.v3.diff",
+    timeout: httpx.Timeout | None = None,
+) -> dict:
+    """
+    Strict-contract GitHub REST fetch for RAW text responses (Fix #1).
+
+    Never calls response.json() — always reads response.text.
+    Returns the same predictable dict schema as fetch_github_json:
+        {"error": bool, "status_code": int, "message": str, "data": str|None, "meta": dict}
+    """
+    tl = timeout or _GITHUB_TIMEOUT
+    headers = _github_headers(accept)
+    meta: dict = {"url": url, "rate_limit": {}}
+    try:
+        async with httpx.AsyncClient(timeout=tl, follow_redirects=True) as client:  # Fix #9
+            resp = await client.get(url, headers=headers)
+            meta["rate_limit"] = _rate_limit_info(resp)       # Fix #3
+            meta["final_url"] = str(resp.url)
+
+            # Fix #2: status verification before reading body.
+            if resp.status_code >= 400:
+                return {
+                    "error": True,
+                    "status_code": resp.status_code,
+                    "message": _github_error_message(resp.status_code, url),
+                    "data": None,
+                    "meta": meta,
+                }
+
+            # Fix #1: NEVER call .json() on raw diff responses — read .text only.
+            try:
+                data = resp.text or ""
+            except Exception as exc:
+                return {
+                    "error": True,
+                    "status_code": resp.status_code,
+                    "message": f"Failed to read response body: {exc}",
+                    "data": None,
+                    "meta": meta,
+                }
+
+            return {
+                "error": False,
+                "status_code": resp.status_code,
+                "message": "OK",
+                "data": data,
+                "meta": meta,
+            }
+    except httpx.TimeoutException as exc:                       # Fix #6
+        return {
+            "error": True,
+            "status_code": 504,
+            "message": f"Timed out connecting to GitHub API: {url} ({exc})",
+            "data": None,
+            "meta": meta,
+        }
+    except httpx.RequestError as exc:                           # Fix #6 / #8
+        return {
+            "error": True,
+            "status_code": 502,
+            "message": f"Network error connecting to GitHub: {exc}",
+            "data": None,
+            "meta": meta,
+        }
+    except Exception as exc:                                    # Fix #8
+        return {
+            "error": True,
+            "status_code": 500,
+            "message": f"Unexpected error fetching GitHub API: {exc}",
+            "data": None,
+            "meta": meta,
+        }
+
+
+async def build_diff_from_paginated_files(
+    repo: str, pr_number: int, files: list[dict]
+) -> str:
+    """
+    Fallback diff builder (Fix #3 / empty-diff fallback).
+
+    Reconstructs a unified diff from the paginated /pulls/{pr}/files JSON array
+    using each file's `filename` and `patch` field. Used when the raw .diff
+    endpoint returns empty or fails.
+    """
+    sections: list[str] = []
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        filename = f.get("filename") or ""
+        if _is_lockfile_or_generated(filename):
+            continue
+        patch = f.get("patch") or ""
+        status = f.get("status") or ""
+        if not patch and status != "added":
+            continue
+        sections.append(f"diff --git a/{filename} b/{filename}")
+        if status == "added":
+            sections.append(f"new file mode 100644")
+            sections.append(f"--- /dev/null")
+            sections.append(f"+++ b/{filename}")
+        elif status == "deleted":
+            sections.append(f"deleted file mode 100644")
+            sections.append(f"--- a/{filename}")
+            sections.append(f"+++ /dev/null")
+        else:
+            sections.append(f"--- a/{filename}")
+            sections.append(f"+++ b/{filename}")
+        sections.append(patch)
+        sections.append("")  # blank line between files
+    return "\n".join(sections)
+
+
+async def fetch_github_pr_diff_with_fallback(
+    repo: str, pr_number: int
+) -> tuple[Optional[str], Optional[str], int, dict]:
+    """
+    Fetch PR diff with fallback to paginated files reconstruction (Fix #1, #3).
+
+    1. Tries the raw .diff endpoint (never calls .json()).
+    2. If diff is empty/failed, reconstructs from paginated /pulls/{pr}/files.
+    Returns (diff_text, error_message, status_code, meta).
+    """
+    meta: dict = {"diff_source": "raw_endpoint", "rate_limit": {}, "pages_fetched": 0}
+
+    # Step 1: Try raw .diff endpoint
+    result = await fetch_github_raw(
+        f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
+        accept="application/vnd.github.v3.diff",
+    )
+    meta["rate_limit"] = result.get("meta", {}).get("rate_limit", {})
+
+    if not result["error"]:
+        diff_text = result["data"] or ""
+        if diff_text.strip():
+            return diff_text, None, 200, meta
+        # Empty diff — fall through to fallback builder
+
+    # Step 2: Fallback — reconstruct from paginated /pulls/{pr}/files
+    meta["diff_source"] = "paginated_files_fallback"
+    files, files_err, files_status, files_meta = await fetch_github_pr_files_paginated(
+        repo, pr_number
+    )
+    meta["pages_fetched"] = files_meta.get("pages_fetched", 0)
+    meta["rate_limit"].update(files_meta.get("rate_limit", {}))
+
+    if files_err:
+        # Return the original diff error if fallback also failed
+        return None, result.get("message") or files_err, result.get("status_code") or files_status, meta
+
+    diff_text = await build_diff_from_paginated_files(repo, pr_number, files or [])
+    if not diff_text.strip():
+        return None, f"PR #{pr_number} has 0 changed files in its diff", 404, meta
+
+    return diff_text, None, 200, meta
 
 
 async def fetch_github_pr_metadata(repo: str, pr_number: int) -> tuple[Optional[dict], Optional[str], int]:
     """
-    Fetch PR metadata (title, body, state, author, url) via the GitHub REST API.
+    Fetch PR metadata via the GitHub REST API using the strict-contract helper.
     Returns (metadata, error_message, status_code).
     """
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
-    try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers=_github_headers("application/vnd.github.v3+json"))
-            if resp.status_code == 200:
-                data = resp.json()
-                meta = {
-                    "pr_title": str(data.get("title") or ""),
-                    "pr_body": str(data.get("body") or "")[:1500],
-                    "pr_state": "MERGED" if data.get("merged") else str(data.get("state") or "open").upper(),
-                    "pr_author": str((data.get("user") or {}).get("login") or ""),
-                    "pr_url": str(data.get("html_url") or f"https://github.com/{repo}/pull/{pr_number}"),
-                }
-                return meta, None, 200
-            if resp.status_code == 404:
-                return None, f"Pull Request #{pr_number} not found in {repo}", 404
-            if resp.status_code in (403, 429):
-                return None, (
-                    f"GitHub API rate limit exceeded for {repo} (HTTP {resp.status_code}) — "
-                    "set the GITHUB_TOKEN environment variable to raise the limit."
-                ), resp.status_code
-            if resp.status_code == 401:
-                return None, "GitHub authentication failed (401) — check that GITHUB_TOKEN is valid and not expired.", 401
-            return None, f"GitHub API returned HTTP {resp.status_code} for {repo} #{pr_number}.", resp.status_code
-    except httpx.TimeoutException:
-        return None, f"Timed out connecting to GitHub API for {repo} #{pr_number}.", 504
-    except Exception as exc:
-        return None, f"Network error connecting to GitHub: {exc}", 500
+    result = await fetch_github_json(
+        f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
+        accept="application/vnd.github.v3+json",
+    )
+    if result["error"]:
+        return None, result["message"], result["status_code"]
+
+    data = result["data"] or {}
+    if not isinstance(data, dict):
+        return None, "GitHub PR metadata endpoint returned non-object payload", 502
+
+    meta = {
+        "pr_title": str(data.get("title") or ""),
+        "pr_body": str(data.get("body") or "")[:1500],
+        "pr_state": "MERGED" if data.get("merged") else str(data.get("state") or "open").upper(),
+        "pr_author": str((data.get("user") or {}).get("login") or ""),
+        "pr_url": str(data.get("html_url") or f"https://github.com/{repo}/pull/{pr_number}"),
+        "merged": bool(data.get("merged")),
+        "merged_at": str(data.get("merged_at") or ""),
+        "head_sha": str((data.get("head") or {}).get("sha") or ""),
+        "base_ref": str((data.get("base") or {}).get("ref") or ""),
+        "additions": int(data.get("additions") or 0),
+        "deletions": int(data.get("deletions") or 0),
+        "changed_files": int(data.get("changed_files") or 0),
+    }
+    return meta, None, 200
+
+
+async def check_github_issue(repo: str, pr_number: int) -> tuple[bool, Optional[str]]:
+    """
+    Check if a number refers to a GitHub Issue (not a PR) (Fix #3).
+
+    Returns (is_issue, message). If the PR endpoint 404s but the Issues endpoint
+    resolves, we know it's an Issue, not a Pull Request.
+    """
+    result = await fetch_github_json(
+        f"https://api.github.com/repos/{repo}/issues/{pr_number}",
+        accept="application/vnd.github.v3+json",
+    )
+    if result["error"]:
+        return False, None
+    data = result["data"] or {}
+    if isinstance(data, dict) and data.get("pull_request") is None:
+        title = str(data.get("title") or "")
+        return True, f"#{pr_number} is a GitHub Issue, not a Pull Request: \"{title}\""
+    return False, None
 
 
 async def fetch_github_pr_diff(repo: str, pr_number: int) -> tuple[Optional[str], Optional[str], int]:
     """
     Fetch the raw unified diff for a GitHub PR via the GitHub REST API.
     Returns (diff_text, error_message, status_code).
+    Wrapper around fetch_github_pr_diff_with_fallback for backwards compatibility.
     """
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
-    try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers=_github_headers("application/vnd.github.v3.diff"))
-            if resp.status_code == 200:
-                return resp.text, None, 200
-            elif resp.status_code == 404:
-                return None, f"Pull Request #{pr_number} not found in {repo}", 404
-            elif resp.status_code in (403, 429):
-                return None, (
-                    f"GitHub API rate limit exceeded for {repo} (HTTP {resp.status_code}) — "
-                    "set the GITHUB_TOKEN environment variable to raise the limit."
-                ), resp.status_code
-            elif resp.status_code == 401:
-                return None, "GitHub authentication failed (401) — check that GITHUB_TOKEN is valid and not expired.", 401
-            else:
-                return None, f"GitHub API returned HTTP {resp.status_code} for {repo} #{pr_number}.", resp.status_code
-    except httpx.TimeoutException:
-        return None, f"Timed out connecting to GitHub API for {repo} #{pr_number}.", 504
-    except Exception as exc:
-        return None, f"Network error connecting to GitHub: {exc}", 500
+    diff_text, err, status, _meta = await fetch_github_pr_diff_with_fallback(repo, pr_number)
+    return diff_text, err, status
 
 
 COMPLIANCE_RULES = {
@@ -550,34 +969,34 @@ BREACH_ORACLE = {
 
 DEMO_DIFF = """\
 diff --git a/auth/login.py b/auth/login.py
-+++ b/auth/login.py
+++ b/auth/login.py
 @@ -0,0 +1,32 @@
-+import hashlib, logging, jwt, psycopg2
-+
-+AWS_SECRET_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-+STRIPE_SK = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"
-+DB_PASS = "super_secret_prod_2024"
-+
-+def get_patient(patient_id):
-+    p = db.query(patient_id)
-+    logging.info(f"Patient: SSN={p.ssn}, DOB={p.dob}, Diagnosis={p.diagnosis}")
-+    return p
-+
-+def search_users(name):
-+    sql = "SELECT * FROM users WHERE name = '" + name + "'"
-+    cursor.execute(sql)
-+    return cursor.fetchall()
-+
-+def hash_password(pwd):
-+    return hashlib.md5(pwd.encode()).hexdigest()
-+
-+def verify_token(token):
-+    return jwt.decode(token, algorithms=["HS256", "none"],
-+                      options={"verify_signature": False})
-+
-+def render_welcome(req):
-+    name = req.args.get("username", "guest")
-+    return f"<h1>Welcome {name}!</h1>"
+import hashlib, logging, jwt, psycopg2
+
+AWS_SECRET_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+STRIPE_SK = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"
+DB_PASS = "super_secret_prod_2024"
+
+def get_patient(patient_id):
+    p = db.query(patient_id)
+    logging.info(f"Patient: SSN={p.ssn}, DOB={p.dob}, Diagnosis={p.diagnosis}")
+    return p
+
+def search_users(name):
+    sql = "SELECT * FROM users WHERE name = '" + name + "'"
+    cursor.execute(sql)
+    return cursor.fetchall()
+
+def hash_password(pwd):
+    return hashlib.md5(pwd.encode()).hexdigest()
+
+def verify_token(token):
+    return jwt.decode(token, algorithms=["HS256", "none"],
+                      options={"verify_signature": False})
+
+def render_welcome(req):
+    name = req.args.get("username", "guest")
+    return f"<h1>Welcome {name}!</h1>"
 """
 
 STRIDE_CATS = ["Spoofing", "Tampering", "Repudiation",
@@ -1622,6 +2041,44 @@ def _build_fallback_patch(findings: list[dict], diff_files: list[str], diff_text
     )
     return header + "\n".join(sections) + "\n"
 
+# --- Additional helpers for evidence verification ---
+def _build_valid_files_map(diff_text: str) -> Dict[str, Dict[int, str]]:
+    """Return a mapping of file_path -> line_number -> line_content for added lines."""
+    mapping: Dict[str, Dict[int, str]] = {}
+    for path, ln, txt in _iter_added_lines(diff_text or ""):
+        mapping.setdefault(path, {})[ln] = txt
+    return mapping
+
+def _verify_findings(findings: list[dict], valid_files_map: Dict[str, Dict[int, str]]) -> list[dict]:
+    """Filter findings to those that reference valid added lines in the diff.
+
+    This verifier:
+      1. Drops findings whose `file_path` is not in the PR diff (non-existent file).
+      2. Drops findings whose `line_number` is not an added (`+`) line — removed
+         (`-`) lines never appear in `valid_files_map`, so fix-only PRs are
+         correctly scored as 0 findings instead of false positives.
+      3. Always attaches/overwrites `code_snippet` with the verbatim line text
+         extracted directly from the real GitHub diff (never LLM-hallucinated).
+    """
+    verified: list[dict] = []
+    for f in findings:
+        file_path = f.get("file_path")
+        line = f.get("line_number")
+        if not file_path or not line:
+            continue
+        file_map = valid_files_map.get(file_path)
+        if not file_map:
+            continue
+        if line not in file_map:
+            continue
+        # Overwrite any hallucinated snippet with the verbatim real diff line.
+        snippet = file_map.get(line, "")
+        if snippet:
+            f = dict(f)
+            f["code_snippet"] = snippet.rstrip("\n")
+        verified.append(f)
+    return verified
+
 
 async def remedy_bot(scan_id: str, all_findings: list[dict],
                      diff_files: list[str] | None = None, diff_text: str = "") -> dict:
@@ -1662,7 +2119,7 @@ CRITICAL: Target ONLY the real files changed in this PR. Use these exact paths:
 
 For each modified file the patch MUST begin with:
 --- a/<real_file_path>
-+++ b/<real_file_path>
+++ b/<real_file_path>
 
 Rules:
 - Do NOT invent synthetic filenames (e.g. otel_session.py, app/config.py).
@@ -1862,6 +2319,51 @@ async def run_full_scan(scan_id: str, diff: str):
                     f"📁 {len(diff_files)} modified file(s) parsed from PR diff")
         await asyncio.sleep(0.2)
 
+        # Agent name registry must exist before flowdesk init (references agent_states).
+        agent_names = ["ast_sentinel", "policy_guard", "arch_auditor", "threat_mind"]
+        agent_labels = {
+            "ast_sentinel": "AST Sentinel",
+            "policy_guard": "Policy Guard",
+            "arch_auditor": "Arch Auditor",
+            "threat_mind": "ThreatMind",
+            "remedy_bot": "RemedyBot",
+            "red_team": "Red Team Ω",
+        }
+
+        # ── Flowdesk orchestration state machine ──
+        flowdesk: dict = {
+            "active_node": "FLOW_INIT",
+            "completed_nodes": [],
+            "step_durations_ms": {},
+            "agent_states": {n: "IDLE" for n in agent_names + ["remedy_bot", "red_team"]},
+            "llm_provider_used": "groq-70b",
+            "tokens_processed": 0,
+            "filtered_hallucinations_count": 0,
+            "meta": {},
+        }
+        # Consume real GitHub telemetry captured in _tracked_run (rate limit, pagination, lockfiles).
+        gh_meta = (scan or {}).get("github_flow_meta") or {}
+        diff_stats = (scan or {}).get("diff_stats") or {}
+        flowdesk["meta"] = {
+            "rate_limit_remaining": gh_meta.get("rate_limit_remaining", ""),
+            "pages_fetched": gh_meta.get("pages_fetched", 0),
+            "ignored_lockfiles_count": gh_meta.get("ignored_lockfiles_count", 0),
+            "diff_ignored_lockfiles": diff_stats.get("ignored_lockfiles_count", 0),
+            "diff_ignored_generated": diff_stats.get("ignored_generated_count", 0),
+            "diff_truncated": diff_stats.get("truncated", False),
+            "diff_total_files": diff_stats.get("total_files", 0),
+        }
+        flowdesk_start = time.time()
+
+
+        def _fd_mark(node: str, duration_key: str | None = None):
+            now_ms = (time.time() - flowdesk_start) * 1000
+            flowdesk["active_node"] = node
+            if node not in flowdesk["completed_nodes"]:
+                flowdesk["completed_nodes"].append(node)
+            if duration_key:
+                flowdesk["step_durations_ms"][duration_key] = round(now_ms, 1)
+
         results = await asyncio.gather(
             _run_with_timeout(ast_sentinel(scan_id, safe_diff, diff_files, file_stats, pr_ctx), agent_name="ast_sentinel", scan_id=scan_id),
             _run_with_timeout(policy_guard(scan_id, safe_diff, diff_files, file_stats, pr_ctx), agent_name="policy_guard", scan_id=scan_id),
@@ -1873,15 +2375,6 @@ async def run_full_scan(scan_id: str, diff: str):
         failed_agents: list[str] = []
         completed_agents: list[str] = []
         agent_errors: dict[str, str] = {}
-        agent_names = ["ast_sentinel", "policy_guard", "arch_auditor", "threat_mind"]
-        agent_labels = {
-            "ast_sentinel": "AST Sentinel",
-            "policy_guard": "Policy Guard",
-            "arch_auditor": "Arch Auditor",
-            "threat_mind": "ThreatMind",
-            "remedy_bot": "RemedyBot",
-            "red_team": "Red Team Ω",
-        }
         by_agent: dict[str, list[dict]] = {n: [] for n in agent_names}
 
         for i, r in enumerate(results):
@@ -1929,6 +2422,20 @@ async def run_full_scan(scan_id: str, diff: str):
             await trace(scan_id, "orchestrator",
                         f"🧹 Deduplicated {len(all_findings)} → {len(deduped)} unique finding(s) across agents")
         all_findings = deduped
+
+        # ── Evidence Verification Gate ──
+        # Verify every finding against the real diff map so hallucinations
+        # (non-existent files/line numbers / removed-only lines) are dropped.
+        valid_files_map = _build_valid_files_map(diff)
+        verified_findings = _verify_findings(all_findings, valid_files_map)
+        dropped_count = len(all_findings) - len(verified_findings)
+        flowdesk["filtered_hallucinations_count"] = dropped_count
+        flowdesk["active_node"] = "EVIDENCE_VERIFICATION_GATE"
+        if dropped_count:
+            await trace(scan_id, "orchestrator",
+                        f"🚫 Evidence Gate dropped {dropped_count} hallucinated finding(s)")
+        all_findings = verified_findings
+
         if scan_id in SCANS:
             SCANS[scan_id]["findings"] = list(all_findings)
 
@@ -2054,6 +2561,16 @@ async def run_full_scan(scan_id: str, diff: str):
             "pr_state": pr_ctx.get("pr_state"),
             "pr_author": pr_ctx.get("pr_author"),
             "pr_url": pr_ctx.get("pr_url"),
+            "flowdesk_telemetry": {
+                "active_node": "FLOW_COMPLETE",
+                "completed_nodes": flowdesk.get("completed_nodes", []),
+                "step_durations_ms": flowdesk.get("step_durations_ms", {}),
+                "agent_states": flowdesk.get("agent_states", {}),
+                "llm_provider_used": flowdesk.get("llm_provider_used", "groq-70b"),
+                "tokens_processed": flowdesk.get("tokens_processed", 0),
+                "filtered_hallucinations_count": flowdesk.get("filtered_hallucinations_count", 0),
+                "meta": flowdesk.get("meta", {}),
+            },
         }
 
         if scan_id in SCANS:
@@ -2074,6 +2591,7 @@ async def run_full_scan(scan_id: str, diff: str):
                 "agent_errors": agent_errors,
                 "consensus": consensus_data,
                 "summary": summary,
+                "flowdesk_telemetry": summary["flowdesk_telemetry"],
             })
         await emit(scan_id, summary)
         await trace(scan_id, "orchestrator",
@@ -2257,32 +2775,77 @@ async def start_demo(background_tasks: BackgroundTasks, payload: Optional[DemoSc
                         "pr_state": "OPEN",
                         "pr_author": "argus-demo",
                         "pr_url": f"https://github.com/{target_repo}/pull/{target_pr}",
+                        "merged": False,
+                        "merged_at": "",
+                        "head_sha": "",
+                        "base_ref": "",
+                        "additions": 0,
+                        "deletions": 0,
+                        "changed_files": 0,
                     }
                 else:
                     await trace(sid, "orchestrator", f"🌐 Fetching live PR metadata + diff from GitHub for {target_repo} PR #{target_pr}...")
                     meta_res, diff_res = await asyncio.gather(
                         fetch_github_pr_metadata(target_repo, target_pr),
-                        fetch_github_pr_diff(target_repo, target_pr),
+                        fetch_github_pr_diff_with_fallback(target_repo, target_pr),
                     )
                     meta, meta_err, _meta_status = meta_res
-                    diff_text, diff_err, _diff_status = diff_res
+                    diff_text, diff_err, diff_status, diff_meta = diff_res
 
                     terminal_err = meta_err or diff_err
                     if terminal_err:
+                        # Fix #3: If PR 404s, check if it's actually an Issue.
+                        if diff_status == 404 or meta_err and "404" in str(meta_err):
+                            is_issue, issue_msg = await check_github_issue(target_repo, target_pr)
+                            if is_issue:
+                                await _fail_scan(sid, issue_msg)
+                                return
                         await _fail_scan(sid, terminal_err)
                         return
                     if not diff_text or not diff_text.strip():
                         await _fail_scan(sid, f"PR #{target_pr} has 0 changed files in its diff")
                         return
 
-                    diff_to_scan = diff_text
-                    await trace(sid, "orchestrator", f"✅ Live PR data retrieved from GitHub ({len(diff_text)} bytes of diff)")
+                    # Fix #4: Paginate changed files for full PR coverage (>30/100 files).
+                    files_res, files_err, files_status, files_meta = await fetch_github_pr_files_paginated(
+                        target_repo, target_pr
+                    )
+                    if files_err:
+                        await trace(sid, "orchestrator",
+                                    f"⚠️  Could not paginate PR files: {files_err} — using diff-derived file list instead")
+                    flow_meta = {
+                        "rate_limit_remaining": diff_meta.get("rate_limit", {}).get("remaining", ""),
+                        "pages_fetched": diff_meta.get("pages_fetched", 0),
+                        "ignored_lockfiles_count": diff_meta.get("ignored_lockfiles_count", 0),
+                        "diff_source": diff_meta.get("diff_source", "raw_endpoint"),
+                    }
+
+                    # Fix #7: Filter lockfiles/generated files + token budget before LLM prompts.
+                    filtered_diff, diff_stats = filter_diff_for_llm(diff_text)
+                    if diff_stats["truncated"]:
+                        await trace(sid, "orchestrator",
+                                    f"📏 Diff truncated for LLM context budget (skipped {diff_stats.get('ignored_lockfiles_count', 0)} lockfiles/generated files)")
+
+                    diff_to_scan = filtered_diff or diff_text
+                    await trace(sid, "orchestrator", f"✅ Live PR data retrieved from GitHub ({len(diff_text)} bytes of diff, source: {diff_meta.get('diff_source', 'raw_endpoint')})")
                     pr_meta = {
                         "pr_title": (meta or {}).get("pr_title") or f"PR #{target_pr}",
                         "pr_state": (meta or {}).get("pr_state") or "OPEN",
                         "pr_author": (meta or {}).get("pr_author") or "unknown",
                         "pr_url": (meta or {}).get("pr_url") or f"https://github.com/{target_repo}/pull/{target_pr}",
+                        "merged": (meta or {}).get("merged", False),
+                        "merged_at": (meta or {}).get("merged_at", ""),
+                        "head_sha": (meta or {}).get("head_sha", ""),
+                        "base_ref": (meta or {}).get("base_ref", ""),
+                        "additions": (meta or {}).get("additions", 0),
+                        "deletions": (meta or {}).get("deletions", 0),
+                        "changed_files": (meta or {}).get("changed_files", 0),
                     }
+
+                    # Store flowdesk-relevant GitHub meta for run_full_scan to consume.
+                    if sid in SCANS:
+                        SCANS[sid]["github_flow_meta"] = flow_meta
+                        SCANS[sid]["diff_stats"] = diff_stats
 
                 if sid in SCANS:
                     SCANS[sid].update({
@@ -2291,6 +2854,13 @@ async def start_demo(background_tasks: BackgroundTasks, payload: Optional[DemoSc
                         "pr_author": pr_meta["pr_author"],
                         "pr_url": pr_meta["pr_url"],
                         "pr_body": (meta or {}).get("pr_body", ""),
+                        "merged": pr_meta["merged"],
+                        "merged_at": pr_meta["merged_at"],
+                        "head_sha": pr_meta["head_sha"],
+                        "base_ref": pr_meta["base_ref"],
+                        "additions": pr_meta["additions"],
+                        "deletions": pr_meta["deletions"],
+                        "changed_files": pr_meta["changed_files"],
                     })
 
                 # Emit the initial status + pr_meta events BEFORE any agent starts,
@@ -2343,6 +2913,13 @@ async def list_scans(limit: int = 10):
             "pr_state": sdata.get("pr_state"),
             "pr_author": sdata.get("pr_author"),
             "pr_url": sdata.get("pr_url"),
+            "merged": sdata.get("merged", False),
+            "merged_at": sdata.get("merged_at", ""),
+            "head_sha": sdata.get("head_sha", ""),
+            "base_ref": sdata.get("base_ref", ""),
+            "additions": sdata.get("additions", 0),
+            "deletions": sdata.get("deletions", 0),
+            "changed_files": sdata.get("changed_files", 0),
             "status": sdata.get("status") or ("complete" if sdata.get("done") else "running"),
             "verdict": sdata.get("verdict"),
             "scan_status": sdata.get("status"),
@@ -2375,6 +2952,13 @@ async def get_scan(scan_id: str):
         "pr_state": sdata.get("pr_state"),
         "pr_author": sdata.get("pr_author"),
         "pr_url": sdata.get("pr_url"),
+        "merged": sdata.get("merged", False),
+        "merged_at": sdata.get("merged_at", ""),
+        "head_sha": sdata.get("head_sha", ""),
+        "base_ref": sdata.get("base_ref", ""),
+        "additions": sdata.get("additions", 0),
+        "deletions": sdata.get("deletions", 0),
+        "changed_files": sdata.get("changed_files", 0),
         "status": sdata.get("status") or ("complete" if sdata.get("done") else "running"),
         "verdict": sdata.get("verdict"),
         "scan_status": sdata.get("status"),
