@@ -32,3 +32,8 @@ node_modules/
 frontend/AGENTS.md
 frontend/CLAUDE.md
 
+# Local runtime logs (never commit)
+*.log
+backend.log
+frontend.log
+
