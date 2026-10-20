@@ -586,5 +586,58 @@ def test_degraded_scan_verdict_when_some_agents_fail():
         main_api.SCANS.pop(scan_id, None)
 
 
+def test_is_lockfile_or_generated():
+    from main_api import _is_lockfile_or_generated
+    assert _is_lockfile_or_generated("package-lock.json") is True
+    assert _is_lockfile_or_generated("yarn.lock") is True
+    assert _is_lockfile_or_generated("frontend/package-lock.json") is True
+    assert _is_lockfile_or_generated("assets/logo.svg") is True
+    assert _is_lockfile_or_generated("static/bundle.min.js") is True
+    assert _is_lockfile_or_generated("node_modules/foo/index.js") is True
+    assert _is_lockfile_or_generated("src/auth.py") is False
+    assert _is_lockfile_or_generated("components/Button.tsx") is False
 
 
+def test_filter_diff_for_llm_strips_lockfiles():
+    from main_api import filter_diff_for_llm
+    diff = (
+        "diff --git a/package-lock.json b/package-lock.json\n"
+        "+++ b/package-lock.json\n"
+        "@@ -1,3 +1,3 @@\n"
+        "+  \"version\": \"2.0.0\"\n"
+        "diff --git a/src/index.ts b/src/index.ts\n"
+        "+++ b/src/index.ts\n"
+        "@@ -1,2 +1,2 @@\n"
+        "+const apiKey = process.env.API_KEY;\n"
+    )
+    filtered, stats = filter_diff_for_llm(diff)
+    assert stats["ignored_lockfiles_count"] == 1
+    assert "package-lock.json" not in filtered
+    assert "src/index.ts" in filtered
+
+
+def test_evidence_verification_gate_drops_hallucinations():
+    from main_api import _build_valid_files_map, _verify_findings
+
+    diff = (
+        "diff --git a/src/app.py b/src/app.py\n"
+        "--- a/src/app.py\n"
+        "+++ b/src/app.py\n"
+        "@@ -10,1 +10,2 @@\n"
+        "+eval(user_input)\n"
+        "+print('done')\n"
+    )
+    valid_map = _build_valid_files_map(diff)
+    assert "src/app.py" in valid_map
+    assert 10 in valid_map["src/app.py"]
+    assert 11 in valid_map["src/app.py"]
+
+    findings = [
+        {"file_path": "src/app.py", "line_number": 10, "title": "eval sink", "severity": "CRITICAL"},
+        {"file_path": "src/app.py", "line_number": 99, "title": "fake line", "severity": "HIGH"},
+        {"file_path": "nonexistent.py", "line_number": 10, "title": "fake file", "severity": "HIGH"},
+    ]
+    verified = _verify_findings(findings, valid_map)
+    assert len(verified) == 1
+    assert verified[0]["line_number"] == 10
+    assert verified[0]["code_snippet"] == "eval(user_input)"
