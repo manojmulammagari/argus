@@ -27,6 +27,7 @@ interface RecentScan {
   repo_full_name: string
   pr_number: number
   pr_title?: string | null
+  pr_state?: string | null
   status: string
   risk_score?: number
   total_findings: number
@@ -199,7 +200,7 @@ export default function Home() {
       <div className="flex-1 relative">
         <div className="absolute inset-0 bg-[radial-gradient(#141c2e_1px,transparent_1px)] [background-size:16px_16px] opacity-40 pointer-events-none" />
 
-        <div className="max-w-6xl mx-auto px-5 py-12 md:py-16">
+        <div className="max-w-6xl mx-auto px-5 pt-24 md:pt-28 pb-12 md:pb-16">
           {/* ── Hero ────────────────────────────────────────────────────── */}
           <div className="max-w-3xl mb-8">
             <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-white mb-4 leading-tight">
@@ -282,6 +283,30 @@ export default function Home() {
                   </span>
                 ))}
               </div>
+
+              {/* 1-click preset pills that auto-fill and trigger scans */}
+              <div className="mt-4 flex flex-wrap gap-2.5">
+                <button
+                  onClick={() => {
+                    applyExample("traceloop/openllmetry", 4618)
+                    triggerScan()
+                  }}
+                  disabled={loading}
+                  className="px-3 py-2 rounded-lg border border-slate-700 bg-slate-900/60 hover:border-cyan-500/50 hover:bg-slate-800 text-xs font-mono text-slate-300 hover:text-white transition-all"
+                >
+                  <span className="text-emerald-400 font-bold">●</span>&nbsp; Clean / merged PR — verify 0 false positives
+                </button>
+                <button
+                  onClick={() => {
+                    applyExample("OWASP/wrongsecrets", 951)
+                    triggerScan()
+                  }}
+                  disabled={loading}
+                  className="px-3 py-2 rounded-lg border border-slate-700 bg-slate-900/60 hover:border-rose-500/50 hover:bg-slate-800 text-xs font-mono text-slate-300 hover:text-white transition-all"
+                >
+                  <span className="text-rose-400 font-bold">●</span>&nbsp; Vulnerable PR — real diff detection &amp; RemedyBot patch
+                </button>
+              </div>
             </div>
           </div>
 
@@ -338,6 +363,7 @@ export default function Home() {
                       <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/80">
                         <th className="px-3.5 py-2.5 font-semibold">Repo</th>
                         <th className="px-3.5 py-2.5 font-semibold">PR #</th>
+                        <th className="px-3.5 py-2.5 font-semibold text-center">State</th>
                         <th className="px-3.5 py-2.5 font-semibold w-full">PR Title</th>
                         <th className="px-3.5 py-2.5 font-semibold text-right">Findings</th>
                         <th className="px-3.5 py-2.5 font-semibold text-center">Risk Score</th>
@@ -356,6 +382,22 @@ export default function Home() {
                           >
                             <td className="px-3.5 py-3 font-mono text-purple-300 whitespace-nowrap">{s.repo_full_name}</td>
                             <td className="px-3.5 py-3 font-mono text-slate-400 whitespace-nowrap">#{s.pr_number}</td>
+                            <td className="px-3.5 py-3 text-center">
+                              {(() => {
+                                const st = String(s.pr_state ?? "").toUpperCase()
+                                const cfg =
+                                  st === "MERGED"
+                                    ? { label: "MERGED", cls: "text-purple-300 bg-purple-500/10 border-purple-500/30" }
+                                    : st === "CLOSED"
+                                      ? { label: "CLOSED", cls: "text-rose-300 bg-rose-500/10 border-rose-500/30" }
+                                      : { label: "OPEN", cls: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30" }
+                                return (
+                                  <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${cfg.cls}`}>
+                                    {cfg.label}
+                                  </span>
+                                )
+                              })()}
+                            </td>
                             <td className="px-3.5 py-3 text-slate-300 max-w-[320px] truncate" title={s.pr_title ?? ""}>
                               {s.pr_title || <span className="text-slate-600">—</span>}
                             </td>
